@@ -35,6 +35,13 @@
       }
     },
     {
+      "name": "web",
+      "hidden": true,
+      "inherits": "base",
+      "description": "Emscripten from the emsdk in EMSDK.",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
+    },
+    {
       "name": "debug",
       "hidden": true,
       "cacheVariables": {
@@ -102,6 +109,30 @@
         "linux",
         "release"
       ]
+    },
+    {
+      "name": "web-debug",
+      "displayName": "Web Debug",
+      "inherits": [
+        "web",
+        "debug"
+      ]
+    },
+    {
+      "name": "web-relwithdebinfo",
+      "displayName": "Web RelWithDebInfo",
+      "inherits": [
+        "web",
+        "relwithdebinfo"
+      ]
+    },
+    {
+      "name": "web-release",
+      "displayName": "Web Release",
+      "inherits": [
+        "web",
+        "release"
+      ]
     }
   ],
   "buildPresets": [
@@ -128,6 +159,18 @@
     {
       "name": "linux-release",
       "configurePreset": "linux-release"
+    },
+    {
+      "name": "web-debug",
+      "configurePreset": "web-debug"
+    },
+    {
+      "name": "web-relwithdebinfo",
+      "configurePreset": "web-relwithdebinfo"
+    },
+    {
+      "name": "web-release",
+      "configurePreset": "web-release"
     }
   ],
   "workflowPresets": [
@@ -212,6 +255,48 @@
         {
           "type": "build",
           "name": "linux-release"
+        }
+      ]
+    },
+    {
+      "name": "web-debug",
+      "displayName": "Web Debug",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "web-debug"
+        },
+        {
+          "type": "build",
+          "name": "web-debug"
+        }
+      ]
+    },
+    {
+      "name": "web-relwithdebinfo",
+      "displayName": "Web RelWithDebInfo",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "web-relwithdebinfo"
+        },
+        {
+          "type": "build",
+          "name": "web-relwithdebinfo"
+        }
+      ]
+    },
+    {
+      "name": "web-release",
+      "displayName": "Web Release",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "web-release"
+        },
+        {
+          "type": "build",
+          "name": "web-release"
         }
       ]
     }

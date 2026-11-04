@@ -4,7 +4,7 @@ UsmapGen generates a `.usmap` mappings file from a Win64 Unreal Engine executabl
 
 - Unreal Engine 4.18 to 5.8, Win64 PE32+ shipping executables
 - Ranged reads through a `Source` interface, so the executable can stream from a network
-- Builds for desktop and Emscripten
+- Builds for Linux, Windows and the web
 - One dependency: [Zydis](https://github.com/zyantific/zydis)
 
 ## Build
@@ -12,9 +12,14 @@ UsmapGen generates a `.usmap` mappings file from a Win64 Unreal Engine executabl
 ```sh
 git clone --recursive https://github.com/Ka1serM/UsmapGen.git
 cd UsmapGen
-cmake --preset linux-release
-cmake --build build-linux-release
+cmake --workflow --preset linux-release
 ```
+
+| Preset | Toolchain |
+| --- | --- |
+| `linux-release` | Clang, libc++ and LLD |
+| `windows-release` | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in `PATH`, from a Windows or Linux host |
+| `web-release` | Emscripten from the emsdk in `EMSDK` |
 
 ## Command line
 
