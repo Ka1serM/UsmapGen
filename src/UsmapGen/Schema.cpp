@@ -8,7 +8,8 @@ namespace UsmapGen {
 namespace {
 
 constexpr std::uint16_t usmapMagic = 0x30C4;
-constexpr std::uint8_t usmapVersionEngineVersioning = 5;
+//! ExplicitEnumValues: the newest version whose body this writer fills. EngineVersioning only adds fields to the versioning header, which stays empty.
+constexpr std::uint8_t usmapVersionExplicitEnumValues = 4;
 constexpr std::uint8_t compressionNone = 0;
 
 class Writer {
@@ -101,7 +102,7 @@ std::vector<std::byte> writeUsmap(const Schema& schema) {
     file.reserve(data.size() + 16);
     Writer header(file);
     header.write(usmapMagic);
-    header.write(usmapVersionEngineVersioning);
+    header.write(usmapVersionExplicitEnumValues);
     header.write(std::int32_t(0));
     header.write(compressionNone);
     header.write(std::uint32_t(data.size()));

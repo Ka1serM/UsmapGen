@@ -44,4 +44,4 @@ public:
 const std::expected<std::vector<std::byte>, UsmapGen::Error> usmap = UsmapGen::generateUsmap(source);
 ```
 
-The output is an uncompressed usmap of version 5 without package versioning.
+The output is an uncompressed usmap of version 4 (ExplicitEnumValues) without package versioning.
