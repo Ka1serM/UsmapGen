@@ -1,0 +1,52 @@
+if(NOT PROJECT_IS_TOP_LEVEL)
+    return()
+endif()
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(BUILD_SHARED_LIBS OFF)
+
+get_property(multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT multi_config AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+#! Clang's precompiled headers need ccache's sloppiness pch_defines,time_macros,include_file_mtime,include_file_ctime.
+find_program(CCACHE ccache)
+if(CCACHE)
+    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE}")
+endif()
+add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-Xclang -fno-pch-timestamp>")
+
+set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+
+if(EMSCRIPTEN)
+    add_compile_options(-pthread -msimd128 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+    add_link_options(-pthread -msimd128 -fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
+else()
+    add_compile_options(-march=x86-64-v3 "$<$<COMPILE_LANGUAGE:CXX>:-stdlib=libc++>")
+    add_link_options(-stdlib=libc++)
+    set(CMAKE_LINKER_TYPE LLD)
+    add_compile_options("$<$<CONFIG:Release>:-ffunction-sections;-fdata-sections;-fno-math-errno>")
+    add_link_options("$<$<CONFIG:Release>:LINKER:--gc-sections;LINKER:--icf=all>")
+endif()
+if(WIN32)
+    add_compile_options("$<$<CONFIG:Debug,RelWithDebInfo>:-gcodeview>")
+    add_link_options("$<$<CONFIG:Debug,RelWithDebInfo>:LINKER:--pdb=>" -static)
+    #! cpp-httplib needs Windows 10, and MinGW's headers default to an older version.
+    add_compile_definitions(_WIN32_WINNT=0x0A00)
+elseif(NOT EMSCRIPTEN)
+    add_compile_options("$<$<CONFIG:Debug,RelWithDebInfo>:-gsplit-dwarf>")
+    add_compile_options("$<$<CONFIG:Release>:-fno-plt>")
+    #! Without these flags, Clang links GCC's runtime on Linux.
+    add_link_options(--rtlib=compiler-rt --unwindlib=libunwind)
+endif()
+
+foreach(language C CXX)
+    string(REGEX REPLACE "[-/]DNDEBUG" "" CMAKE_${language}_FLAGS_RELWITHDEBINFO "${CMAKE_${language}_FLAGS_RELWITHDEBINFO}")
+endforeach()
