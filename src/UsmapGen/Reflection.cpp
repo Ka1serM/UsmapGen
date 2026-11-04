@@ -14,6 +14,8 @@ namespace UsmapGen {
 
 namespace {
 
+constexpr std::uint64_t maxPointerGap = 32;
+constexpr std::size_t initializerCandidates = 8;
 constexpr std::uint64_t maxRegistrations = 4096;
 constexpr std::uint32_t maxSingletons = 0xFFFF;
 constexpr std::size_t sampleSize = 256;
@@ -206,6 +208,7 @@ public:
 
 private:
     std::vector<std::uint64_t> findInitializers();
+    std::vector<std::uint64_t> findInitializersInReadOnlyData();
     void runInitializers(std::span<const std::uint64_t> initializers);
     void applyStores(std::uint64_t function);
     bool collectBatches(std::span<const std::uint64_t> initializers);
@@ -284,10 +287,8 @@ private:
 
 //! The CRT startup code, which the entry point calls or jumps to, runs each table of initializers with _initterm(First, Last) or _initterm_e(First, Last).
 std::vector<std::uint64_t> Reflection::findInitializers() {
-    if (!image.isCode(image.getEntryPoint())) {
-        image.fail(std::format("The entry point {:#x} is outside .text, so a packer or protector replaced the CRT startup code.", image.getEntryPoint()));
-        return {};
-    }
+    if (!image.isCode(image.getEntryPoint()))
+        return findInitializersInReadOnlyData();
     std::vector<std::uint64_t> initializers;
     std::vector<std::uint64_t> table;
     for (const Call& startup : code.findCalls(image.getEntryPoint())) {
@@ -305,6 +306,38 @@ std::vector<std::uint64_t> Reflection::findInitializers() {
     if (initializers.empty())
         image.fail("The startup code runs no table of C++ dynamic initializers.");
     return initializers;
+}
+
+//! A protector's entry point hides the CRT startup code, but .CRT$XCU stays the longest run of relocated code pointers in .rdata, with zeros between CRT sections.
+std::vector<std::uint64_t> Reflection::findInitializersInReadOnlyData() {
+    const std::vector<std::uint64_t> slots = image.readPointerSlots(image.getReadOnlyData());
+    struct Run {
+        std::size_t first;
+        std::size_t count;
+    };
+    std::vector<Run> runs;
+    std::size_t first = 0;
+    for (std::size_t i = 1; i <= slots.size(); i++) {
+        if (i < slots.size() && slots[i] - slots[i - 1] <= maxPointerGap && (slots[i] - slots[i - 1]) % 8 == 0)
+            continue;
+        runs.push_back({first, i - first});
+        first = i;
+    }
+    const std::size_t candidates = std::min(runs.size(), initializerCandidates);
+    std::partial_sort(runs.begin(), runs.begin() + candidates, runs.end(), [](const Run& a, const Run& b) { return a.count > b.count; });
+    std::vector<std::uint64_t> table;
+    for (const Run& run : std::span(runs).first(candidates)) {
+        const std::uint64_t begin = slots[run.first];
+        const std::uint64_t end = slots[run.first + run.count - 1] + 8;
+        table.resize((end - begin) / 8);
+        image.read(begin, std::as_writable_bytes(std::span(table)));
+        if (!std::ranges::all_of(table, [&](std::uint64_t entry) { return entry == 0 || image.isCode(entry); }))
+            continue;
+        std::erase(table, 0);
+        return table;
+    }
+    image.fail("The executable has no table of C++ dynamic initializers.");
+    return {};
 }
 
 bool isIdentifierChar(const char16_t c) {

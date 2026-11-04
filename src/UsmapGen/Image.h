@@ -54,6 +54,7 @@ public:
     void write(std::uint64_t address, std::span<const std::byte> bytes);
 
     bool isFunctionStart(std::uint64_t address);
+    std::vector<std::uint64_t> readPointerSlots(const Section& section);
 
     const std::optional<Error>& getError() const { return error; }
     void fail(std::string message);
@@ -74,6 +75,8 @@ private:
     std::uint64_t functionTable = 0;
     std::uint32_t functionCount = 0;
     std::uint64_t entryPoint = 0;
+    std::uint64_t relocations = 0;
+    std::uint32_t relocationsSize = 0;
     std::unordered_map<std::uint64_t, std::size_t> writtenPageOffsets;
     std::vector<std::byte> writtenPages;
 

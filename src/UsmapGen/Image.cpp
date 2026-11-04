@@ -16,6 +16,8 @@ constexpr std::uint32_t peSignature = 0x4550;
 constexpr std::uint16_t machineAmd64 = 0x8664;
 constexpr std::uint16_t optionalHeaderPe32Plus = 0x20B;
 constexpr std::uint32_t exceptionDirectory = 3;
+constexpr std::uint32_t relocationDirectory = 5;
+constexpr std::uint16_t relocationDir64 = 10;
 constexpr std::uint32_t runtimeFunctionSize = 12;
 constexpr std::uint8_t unwindChainInfo = 4;
 constexpr std::size_t maxStringLength = 4096;
@@ -82,6 +84,9 @@ std::expected<void, Error> Image::open() {
     functionTable = base + exceptionRva;
     functionCount = exceptionSize / runtimeFunctionSize;
     entryPoint = base + field(24 + 16, std::uint32_t{});
+    const auto [relocationRva, relocationSize] = directory(relocationDirectory);
+    relocations = base + relocationRva;
+    relocationsSize = relocationSize;
 
     std::vector<std::byte> table(std::size_t(sectionCount) * 40);
     readFile(pe + 24 + optionalSize, table);
@@ -229,6 +234,33 @@ void Image::readSections(std::uint64_t address, std::span<std::byte> out) {
         out = out.subspan(count);
         address += count;
     }
+}
+
+std::vector<std::uint64_t> Image::readPointerSlots(const Section& section) {
+    std::vector<std::uint64_t> slots;
+    std::vector<std::uint16_t> entries;
+    std::uint64_t at = relocations;
+    const std::uint64_t end = relocations + relocationsSize;
+    while (at + 8 <= end) {
+        const std::uint32_t page = read<std::uint32_t>(at);
+        const std::uint32_t blockSize = read<std::uint32_t>(at + 4);
+        if (blockSize < 8 || at + blockSize > end) {
+            fail(std::format("The base relocation block at {:#x} has the size {}.", at, blockSize));
+            return {};
+        }
+        entries.resize((blockSize - 8) / 2);
+        read(at + 8, std::as_writable_bytes(std::span(entries)));
+        for (const std::uint16_t entry : entries) {
+            if (entry >> 12 != relocationDir64)
+                continue;
+            const std::uint64_t slot = base + page + (entry & 0xFFF);
+            if (section.contains(slot))
+                slots.push_back(slot);
+        }
+        at += blockSize;
+    }
+    std::sort(slots.begin(), slots.end());
+    return slots;
 }
 
 std::string Image::readUtf8(std::uint64_t address) {
