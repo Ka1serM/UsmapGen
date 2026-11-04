@@ -9,14 +9,13 @@ namespace UsmapGen {
 namespace {
 
 constexpr std::uint32_t pageSize = 64 * 1024;
+constexpr std::size_t writtenPageSize = 4096;
 constexpr std::uint32_t maxCachedPages = 512;
 constexpr std::uint32_t noSlot = 0;
 constexpr std::uint32_t peSignature = 0x4550;
 constexpr std::uint16_t machineAmd64 = 0x8664;
 constexpr std::uint16_t optionalHeaderPe32Plus = 0x20B;
 constexpr std::uint32_t exceptionDirectory = 3;
-constexpr std::uint32_t relocationDirectory = 5;
-constexpr std::uint16_t relocationDir64 = 10;
 constexpr std::uint32_t runtimeFunctionSize = 12;
 constexpr std::uint8_t unwindChainInfo = 4;
 constexpr std::size_t maxStringLength = 4096;
@@ -80,11 +79,9 @@ std::expected<void, Error> Image::open() {
         return std::pair{field(24 + 112 + 8 * index, std::uint32_t{}), field(24 + 112 + 8 * index + 4, std::uint32_t{})};
     };
     const auto [exceptionRva, exceptionSize] = directory(exceptionDirectory);
-    const auto [relocationRva, relocationSize] = directory(relocationDirectory);
     functionTable = base + exceptionRva;
     functionCount = exceptionSize / runtimeFunctionSize;
-    relocations = base + relocationRva;
-    relocationsSize = relocationSize;
+    entryPoint = base + field(24 + 16, std::uint32_t{});
 
     std::vector<std::byte> table(std::size_t(sectionCount) * 40);
     readFile(pe + 24 + optionalSize, table);
@@ -106,8 +103,8 @@ std::expected<void, Error> Image::open() {
     }
     if (code.virtualSize == 0 || readOnlyData.virtualSize == 0 || data.virtualSize == 0)
         return std::unexpected(Error{"The executable lacks a .text, .rdata or .data section."});
-    if (functionCount == 0 || relocationsSize == 0)
-        return std::unexpected(Error{"The executable has no exception directory or no base relocations."});
+    if (functionCount == 0)
+        return std::unexpected(Error{"The executable has no exception directory."});
     return {};
 }
 
@@ -172,7 +169,47 @@ const Section* Image::findSection(const std::uint64_t address) const {
     return nullptr;
 }
 
-void Image::read(std::uint64_t address, std::span<std::byte> out) {
+//! A write copies the page of writable data that it changes, so later reads see the value after static initialization.
+void Image::write(std::uint64_t address, std::span<const std::byte> bytes) {
+    while (!bytes.empty()) {
+        if (!data.contains(address)) {
+            fail(std::format("The write at {:#x} is outside the writable data.", address));
+            return;
+        }
+        const std::uint64_t page = address / writtenPageSize;
+        auto [found, inserted] = writtenPageOffsets.try_emplace(page, writtenPages.size());
+        if (inserted) {
+            writtenPages.resize(writtenPages.size() + writtenPageSize);
+            const std::uint64_t begin = std::max(page * writtenPageSize, data.address);
+            const std::uint64_t end = std::min((page + 1) * writtenPageSize, data.address + data.virtualSize);
+            readSections(begin, std::span(writtenPages).subspan(found->second + std::size_t(begin - page * writtenPageSize), std::size_t(end - begin)));
+        }
+        const std::size_t within = std::size_t(address % writtenPageSize);
+        const std::size_t count = std::min(bytes.size(), writtenPageSize - within);
+        std::memcpy(writtenPages.data() + found->second + within, bytes.data(), count);
+        bytes = bytes.subspan(count);
+        address += count;
+    }
+}
+
+void Image::applyWrites(const std::uint64_t address, const std::span<std::byte> out) const {
+    for (std::uint64_t page = address / writtenPageSize; page * writtenPageSize < address + out.size(); page++) {
+        const auto found = writtenPageOffsets.find(page);
+        if (found == writtenPageOffsets.end())
+            continue;
+        const std::uint64_t begin = std::max(address, page * writtenPageSize);
+        const std::uint64_t end = std::min(address + out.size(), (page + 1) * writtenPageSize);
+        std::memcpy(out.data() + (begin - address), writtenPages.data() + found->second + (begin - page * writtenPageSize), std::size_t(end - begin));
+    }
+}
+
+void Image::read(const std::uint64_t address, const std::span<std::byte> out) {
+    readSections(address, out);
+    if (!writtenPageOffsets.empty())
+        applyWrites(address, out);
+}
+
+void Image::readSections(std::uint64_t address, std::span<std::byte> out) {
     while (!out.empty()) {
         const Section* section = findSection(address);
         if (section == nullptr) {
@@ -269,33 +306,6 @@ bool Image::isFunctionStart(const std::uint64_t address) {
     if (read<std::uint32_t>(entry) != rva)
         return false;
     return !(read<std::uint8_t>(base + read<std::uint32_t>(entry + 8)) >> 3 & unwindChainInfo);
-}
-
-std::vector<std::uint64_t> Image::readPointerSlots(const Section& section) {
-    std::vector<std::uint64_t> slots;
-    std::vector<std::uint16_t> entries;
-    std::uint64_t at = relocations;
-    const std::uint64_t end = relocations + relocationsSize;
-    while (at + 8 <= end) {
-        const std::uint32_t page = read<std::uint32_t>(at);
-        const std::uint32_t blockSize = read<std::uint32_t>(at + 4);
-        if (blockSize < 8 || at + blockSize > end) {
-            fail(std::format("The base relocation block at {:#x} has the size {}.", at, blockSize));
-            return {};
-        }
-        entries.resize((blockSize - 8) / 2);
-        read(at + 8, std::as_writable_bytes(std::span(entries)));
-        for (const std::uint16_t entry : entries) {
-            if (entry >> 12 != relocationDir64)
-                continue;
-            const std::uint64_t slot = base + page + (entry & 0xFFF);
-            if (section.contains(slot))
-                slots.push_back(slot);
-        }
-        at += blockSize;
-    }
-    std::sort(slots.begin(), slots.end());
-    return slots;
 }
 
 }

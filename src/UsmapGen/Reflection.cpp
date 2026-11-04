@@ -14,19 +14,19 @@ namespace UsmapGen {
 
 namespace {
 
-constexpr std::uint64_t maxPointerGap = 32;
-constexpr std::size_t initializerCandidates = 8;
 constexpr std::uint64_t maxRegistrations = 4096;
 constexpr std::uint32_t maxSingletons = 0xFFFF;
 constexpr std::size_t sampleSize = 256;
 constexpr std::uint32_t maxProperties = 0xFFFF;
 constexpr std::int64_t maxEnumerators = 0xFFFF;
-constexpr std::uint32_t maxArrayDim = 0xFF;
+constexpr std::uint32_t maxArrayDim = 0xFFFF;
+constexpr std::uint32_t maxUsmapArrayDim = 0xFF;
 constexpr int maxGetterDepth = 2;
 constexpr std::uint32_t maxDependencies = 0xFF;
 constexpr int maxTypeDepth = 16;
 constexpr std::size_t engine4SuperArgument = 11;
 constexpr std::size_t engine425SuperArgument = 12;
+constexpr std::size_t classStorageArgument = 2;
 constexpr std::uint32_t rawStruct = 0x19;
 constexpr std::uint32_t firstEngine423Kind = 0x1E;
 constexpr std::uint32_t maxEngine418Kind = 0x1D;
@@ -206,6 +206,8 @@ public:
 
 private:
     std::vector<std::uint64_t> findInitializers();
+    void runInitializers(std::span<const std::uint64_t> initializers);
+    void applyStores(std::uint64_t function);
     bool collectBatches(std::span<const std::uint64_t> initializers);
     void collectSingles(std::span<const std::uint64_t> initializers);
     void readEngine5Records(std::span<const Batch> batches);
@@ -226,13 +228,15 @@ private:
     void detectPropertyOrder();
     std::optional<Call> findClassBody(std::uint64_t function, std::string_view name, int depth);
     std::optional<ClassBodySignature> findClassBodySignature();
+    std::optional<std::uint64_t> findIntrinsicConstruct(std::uint64_t function, std::uint64_t getter, int depth);
     std::optional<std::size_t> findIntrinsicSuper(std::size_t index, std::optional<ClassBodySignature>& signature);
+    std::optional<std::size_t> findClassOfBody(std::uint64_t getter, const ClassBodySignature& signature);
 
     std::uint32_t readPropertyCount(std::uint64_t at, bool count16);
     std::uint32_t readClassPropertyCount(std::uint64_t params);
     std::uint32_t readDependencyCount(std::uint64_t params);
     std::optional<Kind> readKind(std::uint64_t property);
-    std::uint8_t readArrayDim(std::uint64_t property);
+    std::uint32_t readArrayDim(std::uint64_t property);
     std::span<const std::uint64_t> readPointers(std::uint64_t array, std::uint32_t count);
     void readProperties(std::uint64_t array, std::uint32_t count, std::string_view owner, Struct& out);
     bool readType(std::uint64_t property, PropertyCursor& cursor, int depth);
@@ -260,6 +264,7 @@ private:
     std::vector<ClassRecord> classRecords;
     std::vector<SingleType> singleTypes;
     std::vector<std::uint64_t> registeredStructs;
+    std::unordered_set<std::uint64_t> storedFunctions;
     std::vector<std::uint64_t> registeredEnums;
     std::vector<ClassInfo> classes;
     std::unordered_map<std::uint64_t, std::size_t> classOfFunction;
@@ -277,52 +282,42 @@ private:
     std::string currentOwner;
 };
 
+//! The CRT startup code, which the entry point calls or jumps to, runs each table of initializers with _initterm(First, Last) or _initterm_e(First, Last).
 std::vector<std::uint64_t> Reflection::findInitializers() {
-    const std::vector<std::uint64_t> slots = image.readPointerSlots(image.getReadOnlyData());
-    struct Run {
-        std::size_t first;
-        std::size_t count;
-    };
-    std::vector<Run> runs;
-    std::size_t first = 0;
-    for (std::size_t i = 1; i <= slots.size(); i++) {
-        if (i < slots.size() && slots[i] - slots[i - 1] <= maxPointerGap && (slots[i] - slots[i - 1]) % 8 == 0)
-            continue;
-        runs.push_back({first, i - first});
-        first = i;
+    if (!image.isCode(image.getEntryPoint())) {
+        image.fail(std::format("The entry point {:#x} is outside .text, so a packer or protector replaced the CRT startup code.", image.getEntryPoint()));
+        return {};
     }
-    const std::size_t candidates = std::min(runs.size(), initializerCandidates);
-    std::partial_sort(runs.begin(), runs.begin() + candidates, runs.end(),
-                      [](const Run& a, const Run& b) { return a.count > b.count; });
-    //! The .CRT$XCU initializers are the longest run of code pointers in .rdata, with zeros between CRT sections.
+    std::vector<std::uint64_t> initializers;
     std::vector<std::uint64_t> table;
-    for (const Run& run : std::span(runs).first(candidates)) {
-        const std::uint64_t begin = slots[run.first];
-        const std::uint64_t end = slots[run.first + run.count - 1] + 8;
-        table.resize((end - begin) / 8);
-        image.read(begin, std::as_writable_bytes(std::span(table)));
-        const bool valid = std::ranges::all_of(table, [&](std::uint64_t entry) { return entry == 0 || image.isCode(entry); });
-        if (!valid)
-            continue;
-        std::erase(table, 0);
-        return table;
+    for (const Call& startup : code.findCalls(image.getEntryPoint())) {
+        for (const Call& call : code.findCalls(startup.target)) {
+            const std::uint64_t first = call.getConstant(0).value_or(0);
+            const std::uint64_t last = call.getConstant(1).value_or(0);
+            if (!image.isReadOnlyData(first) || !image.isReadOnlyData(last) || last <= first || (last - first) % 8 != 0)
+                continue;
+            table.resize((last - first) / 8);
+            image.read(first, std::as_writable_bytes(std::span(table)));
+            if (std::ranges::all_of(table, [&](std::uint64_t entry) { return entry == 0 || image.isCode(entry); }))
+                std::ranges::copy_if(table, std::back_inserter(initializers), [](std::uint64_t entry) { return entry != 0; });
+        }
     }
-    image.fail("The executable has no table of C++ dynamic initializers.");
-    return {};
+    if (initializers.empty())
+        image.fail("The startup code runs no table of C++ dynamic initializers.");
+    return initializers;
 }
 
+bool isIdentifierChar(const char16_t c) {
+    return c == u'_' || (c >= u'0' && c <= u'9') || (c >= u'A' && c <= u'Z') || (c >= u'a' && c <= u'z');
+}
+
+//! A registered type name lacks its prefix, so it can start with a digit, as 2DSparseSpatialHashGrid32 does.
 bool Reflection::isWideName(const std::uint64_t address) {
-    if (!image.isReadOnlyData(address))
-        return false;
-    const char16_t first = image.read<char16_t>(address);
-    return first == u'_' || (first >= u'A' && first <= u'Z') || (first >= u'a' && first <= u'z');
+    return image.isReadOnlyData(address) && isIdentifierChar(image.read<char16_t>(address));
 }
 
 bool Reflection::isName(const std::uint64_t address) {
-    if (!image.isReadOnlyData(address))
-        return false;
-    const char first = image.read<char>(address);
-    return first == '_' || (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z');
+    return image.isReadOnlyData(address) && isIdentifierChar(char16_t(image.read<char>(address)));
 }
 
 //! The name of a native type is a C++ identifier, with :: in the CppType of a namespaced enum.
@@ -330,7 +325,7 @@ bool Reflection::isIdentifier(const std::uint64_t address) {
     if (!isName(address))
         return false;
     const std::string text = image.readUtf8(address);
-    return std::ranges::all_of(text, [](char c) { return c == '_' || c == ':' || (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); });
+    return std::ranges::all_of(text, [](char c) { return c == ':' || isIdentifierChar(char16_t(c)); });
 }
 
 //! UE 5 calls RegisterCompiledInInfo(Package, Classes, N, Structs, N, Enums, N) once per generated file.
@@ -431,6 +426,17 @@ void Reflection::readEngine5Records(std::span<const Batch> batches) {
     }
 }
 
+//! MSVC fills a parameter table that it cannot fold into constant data, such as one with the offset of a member, in a C++ dynamic initializer.
+void Reflection::runInitializers(const std::span<const std::uint64_t> initializers) {
+    for (const std::uint64_t initializer : initializers)
+        applyStores(initializer);
+}
+
+void Reflection::applyStores(const std::uint64_t function) {
+    for (const Store& store : code.findStores(function))
+        image.write(store.address, std::as_bytes(std::span(&store.value, 1)).first(store.size));
+}
+
 //! Single registrations: UE 4 class (Register, StaticClass, Name, Package), UE 5 intrinsic class (Register, StaticClass, Package, Name), UE 5.8 intrinsic class (StaticClass, Package, Name), struct or enum (Register, Package, Name).
 void Reflection::collectSingles(std::span<const std::uint64_t> initializers) {
     for (const std::uint64_t initializer : initializers) {
@@ -444,7 +450,14 @@ void Reflection::collectSingles(std::span<const std::uint64_t> initializers) {
                     classRecords.push_back({argument(package - 3), argument(package - 2), argument(package - 1)});
                     break;
                 }
-                if (!image.isCode(argument(package - 1)) || !isWideName(argument(package + 1)))
+                if (!image.isCode(argument(package - 1)))
+                    continue;
+                //! UE 4.20 passes the name of a struct or enum as an FName value.
+                if (package == 1 && !call.getConstant(package + 1)) {
+                    singleTypes.push_back({argument(package - 1), 0});
+                    break;
+                }
+                if (!isWideName(argument(package + 1)))
                     continue;
                 if (package >= 2 && image.isCode(argument(package - 2))) {
                     classRecords.push_back({argument(package - 2), argument(package - 1), argument(package + 1)});
@@ -462,10 +475,15 @@ void Reflection::classifySingles() {
     for (const auto [registrar, name] : singleTypes) {
         if (findParams(registrar, ParamsKind::Struct) != 0)
             continue;
-        if (findParams(registrar, ParamsKind::Enum) != 0)
+        if (findParams(registrar, ParamsKind::Enum) != 0) {
             registeredEnums.push_back(registrar);
-        else
-            classRecords.push_back({registrar, registrar, name});
+            continue;
+        }
+        if (name == 0) {
+            image.fail(std::format("The registration of {:#x} names no type and references no struct or enum parameters.", registrar));
+            return;
+        }
+        classRecords.push_back({registrar, registrar, name});
     }
 }
 
@@ -514,10 +532,15 @@ bool Reflection::isParams(const std::uint64_t params, const ParamsKind kind) {
     return false;
 }
 
+//! Z_Construct passes its parameter table to UECodeGen_Private::Construct*(Out, Params), and can build it as a function-local static first.
 void Reflection::collectParams(const std::uint64_t function, const ParamsKind kind, std::vector<std::uint64_t>& found) {
-    for (const std::uint64_t target : code.findReferences(function).data)
-        if (!std::ranges::contains(found, target) && isParams(target, kind))
-            found.push_back(target);
+    if (storedFunctions.insert(function).second)
+        applyStores(function);
+    for (const Call& call : code.findCalls(function)) {
+        const std::uint64_t params = call.getConstant(1).value_or(0);
+        if (!std::ranges::contains(found, params) && isParams(params, kind))
+            found.push_back(params);
+    }
 }
 
 //! A type's Z_Construct references one parameter table of its kind; StaticStruct and StaticEnum reach it through the Z_Construct that they pass to GetStaticStruct or GetStaticEnum.
@@ -734,14 +757,14 @@ std::optional<Kind> Reflection::readKind(const std::uint64_t property) {
     return translateKind(numbering, image.read<std::uint8_t>(property + layout->propertyType) & mask);
 }
 
-std::uint8_t Reflection::readArrayDim(const std::uint64_t property) {
+std::uint32_t Reflection::readArrayDim(const std::uint64_t property) {
     const std::uint32_t arrayDim = layout->propertyArrayDim16 ? image.read<std::uint16_t>(property + layout->propertyArrayDim)
                                                               : image.read<std::uint32_t>(property + layout->propertyArrayDim);
     if (arrayDim == 0 || arrayDim > maxArrayDim) {
         image.fail(std::format("The property at {:#x} has the array size {}.", property, arrayDim));
         return 1;
     }
-    return std::uint8_t(arrayDim);
+    return arrayDim;
 }
 
 std::span<const std::uint64_t> Reflection::readPointers(const std::uint64_t array, const std::uint32_t count) {
@@ -801,12 +824,17 @@ void Reflection::readProperties(const std::uint64_t array, const std::uint32_t c
     PropertyCursor cursor(readPointers(array, count), backward);
     while (!cursor.isEmpty() && !image.getError()) {
         const std::uint64_t entry = cursor.take();
-        Property property{.name = schema.names.add(image.readUtf8(image.read<std::uint64_t>(entry + layout->propertyName))),
-                          .arrayDim = readArrayDim(entry),
-                          .firstType = std::uint32_t(schema.types.size())};
+        const std::uint32_t name = schema.names.add(image.readUtf8(image.read<std::uint64_t>(entry + layout->propertyName)));
+        const std::uint32_t arrayDim = readArrayDim(entry);
+        const std::uint32_t firstType = std::uint32_t(schema.types.size());
         if (!readType(entry, cursor, 0))
             return;
-        schema.properties.push_back(property);
+        //! A usmap property holds at most 255 elements of a static array; consecutive entries of the same property hold the rest.
+        for (std::uint32_t rest = arrayDim; rest > 0;) {
+            const std::uint32_t part = std::min(rest, maxUsmapArrayDim);
+            schema.properties.push_back({.name = name, .arrayDim = std::uint8_t(part), .firstType = firstType});
+            rest -= part;
+        }
     }
     const auto own = std::span(schema.properties).subspan(out.firstProperty);
     std::reverse(own.begin(), own.end());
@@ -922,7 +950,7 @@ std::optional<ClassBodySignature> Reflection::findClassBodySignature() {
     return ClassBodySignature{function, *argument};
 }
 
-//! UE 4 inlines GetPrivateStaticClassBody in CoreUObject, where NotifyRegistrationEvent takes its package and name and Z_Construct constructs the super class.
+//! UE 4 inlines GetPrivateStaticClassBody in CoreUObject, where NotifyRegistrationEvent takes its package and name; IMPLEMENT_INTRINSIC_CLASS constructs the super before it calls StaticClass.
 std::optional<std::size_t> Reflection::findIntrinsicSuper(const std::size_t index, std::optional<ClassBodySignature>& signature) {
     const ClassInfo& info = classes[index];
     const std::optional<Call> body = findClassBody(code.followThunks(info.getter), bodyNameOf(info.registeredName), 0);
@@ -934,13 +962,20 @@ std::optional<std::size_t> Reflection::findIntrinsicSuper(const std::size_t inde
     }
     if (body && body->target == signature->function) {
         const std::uint64_t superGetter = body->getConstant(signature->superArgument).value_or(0);
-        const std::optional<std::size_t> super = findClass(superGetter);
+        std::optional<std::size_t> super = findClass(superGetter);
+        if (!super)
+            super = findClassOfBody(superGetter, *signature);
         if (!super)
             image.fail(std::format("The super class function {:#x} of {} belongs to no registered class.", superGetter, info.registeredName));
         return super;
     }
+    const std::optional<std::uint64_t> construct = findIntrinsicConstruct(code.followThunks(info.construct), code.followThunks(info.getter), 0);
+    if (!construct) {
+        image.fail(std::format("The Z_Construct function of the inlined intrinsic class {} does not call its StaticClass.", info.registeredName));
+        return std::nullopt;
+    }
     std::vector<std::size_t> supers;
-    for (const std::uint64_t callee : code.findReferences(code.followThunks(info.construct)).code) {
+    for (const std::uint64_t callee : code.findReferences(*construct).code) {
         const std::optional<std::size_t> candidate = findClass(callee);
         if (candidate && *candidate != index && !std::ranges::contains(supers, *candidate))
             supers.push_back(*candidate);
@@ -950,6 +985,40 @@ std::optional<std::size_t> Reflection::findIntrinsicSuper(const std::size_t inde
         return std::nullopt;
     }
     return supers[0];
+}
+
+//! A class can have a second StaticClass function, and both pass the same UClass* storage to GetPrivateStaticClassBody.
+std::optional<std::size_t> Reflection::findClassOfBody(const std::uint64_t getter, const ClassBodySignature& signature) {
+    const std::span<const Call> calls = code.findCalls(code.followThunks(getter));
+    const auto body = std::ranges::find(calls, signature.function, &Call::target);
+    if (body == calls.end())
+        return std::nullopt;
+    const std::optional<std::uint64_t> storage = body->getConstant(classStorageArgument);
+    const std::optional<std::uint64_t> name = body->getConstant(1);
+    if (!storage || !name || !image.isReadOnlyData(*name))
+        return std::nullopt;
+    const std::string bodyName = image.readUtf16(*name);
+    for (std::size_t index = 0; index < classes.size(); index++) {
+        const ClassInfo& info = classes[index];
+        if (bodyNameOf(info.registeredName) != bodyName)
+            continue;
+        const std::optional<Call> candidate = findClassBody(code.followThunks(info.getter), bodyName, 0);
+        if (candidate && candidate->getConstant(classStorageArgument) == storage)
+            return index;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::uint64_t> Reflection::findIntrinsicConstruct(const std::uint64_t function, const std::uint64_t getter, const int depth) {
+    const std::vector<std::uint64_t> callees(std::from_range, code.findReferences(function).code | std::views::transform([&](std::uint64_t callee) { return code.followThunks(callee); }));
+    if (std::ranges::contains(callees, getter))
+        return function;
+    if (depth == maxGetterDepth)
+        return std::nullopt;
+    for (const std::uint64_t callee : callees)
+        if (const std::optional<std::uint64_t> construct = findIntrinsicConstruct(callee, getter, depth + 1))
+            return construct;
+    return std::nullopt;
 }
 
 //! FClassParams lists the super class first among the dependencies; an intrinsic class, such as UClass, has no parameters and names its super in StaticClass.
@@ -1039,6 +1108,7 @@ std::expected<Schema, Error> Reflection::read() {
     const std::vector<std::uint64_t> initializers = findInitializers();
     if (image.getError())
         return std::unexpected(*image.getError());
+    runInitializers(initializers);
     engine5 = collectBatches(initializers);
     collectSingles(initializers);
     for (const auto [registrar, name] : singleTypes)
@@ -1050,6 +1120,8 @@ std::expected<Schema, Error> Reflection::read() {
     if (image.getError())
         return std::unexpected(*image.getError());
     classifySingles();
+    if (image.getError())
+        return std::unexpected(*image.getError());
     if (classRecords.empty())
         return std::unexpected(Error{"The executable registers no reflected classes."});
     collectClasses();

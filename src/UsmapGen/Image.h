@@ -6,6 +6,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "UsmapGen/UsmapGen.h"
@@ -31,6 +32,7 @@ public:
 
     const Section& getCode() const { return code; }
     const Section& getReadOnlyData() const { return readOnlyData; }
+    std::uint64_t getEntryPoint() const { return entryPoint; }
     bool isCode(std::uint64_t address) const { return code.contains(address); }
     bool isData(std::uint64_t address) const { return readOnlyData.contains(address) || data.contains(address); }
     bool isWritableData(std::uint64_t address) const { return data.contains(address); }
@@ -49,14 +51,17 @@ public:
     std::string readUtf16(std::uint64_t address);
     bool startsWithUtf16(std::uint64_t address, std::u16string_view prefix);
 
+    void write(std::uint64_t address, std::span<const std::byte> bytes);
+
     bool isFunctionStart(std::uint64_t address);
-    std::vector<std::uint64_t> readPointerSlots(const Section& section);
 
     const std::optional<Error>& getError() const { return error; }
     void fail(std::string message);
 
 private:
     void readFile(std::uint64_t offset, std::span<std::byte> out);
+    void readSections(std::uint64_t address, std::span<std::byte> out);
+    void applyWrites(std::uint64_t address, std::span<std::byte> out) const;
     std::span<const std::byte> loadPage(std::uint64_t page);
     const Section* findSection(std::uint64_t address) const;
 
@@ -68,8 +73,9 @@ private:
     Section data;
     std::uint64_t functionTable = 0;
     std::uint32_t functionCount = 0;
-    std::uint64_t relocations = 0;
-    std::uint32_t relocationsSize = 0;
+    std::uint64_t entryPoint = 0;
+    std::unordered_map<std::uint64_t, std::size_t> writtenPageOffsets;
+    std::vector<std::byte> writtenPages;
 
     std::vector<std::byte> pages;
     std::vector<std::uint32_t> slotOfPage;

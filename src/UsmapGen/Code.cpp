@@ -1,5 +1,7 @@
 #include "UsmapGen/Code.h"
 
+#include <algorithm>
+
 #include <Zydis/Register.h>
 #include <Zydis/Utils.h>
 
@@ -14,6 +16,11 @@ constexpr std::int64_t stackBelow = 0x4000;
 constexpr std::int64_t stackAbove = 0x200;
 constexpr std::size_t stackSlots = (stackBelow + stackAbove) / 8;
 constexpr int registerCount = 16;
+constexpr int vectorCount = 32;
+constexpr std::size_t vectorLanes = 8;
+constexpr std::size_t lowLanes = 2;
+constexpr int nonvolatileVectorsBegin = 6;
+constexpr int nonvolatileVectorsEnd = 16;
 constexpr int rcx = 1;
 constexpr int rdx = 2;
 constexpr int rsp = 4;
@@ -23,6 +30,8 @@ constexpr std::array<int, 4> argumentRegisters = {rcx, rdx, r8, r9};
 constexpr std::array<int, 7> volatileRegisters = {0, rcx, rdx, r8, r9, 10, 11};
 
 constexpr Value unknown{};
+
+using Lanes = std::array<Value, vectorLanes>;
 
 constexpr Value constant(std::uint64_t value) { return {ValueKind::Constant, value}; }
 
@@ -42,11 +51,19 @@ int indexOf(ZydisRegister reg) {
     return full - ZYDIS_REGISTER_RAX;
 }
 
+bool isHighByte(ZydisRegister reg) {
+    return reg == ZYDIS_REGISTER_AH || reg == ZYDIS_REGISTER_BH || reg == ZYDIS_REGISTER_CH || reg == ZYDIS_REGISTER_DH;
+}
+
 class Machine {
 public:
     void clearVolatile() {
         for (const int reg : volatileRegisters)
             registers[reg] = unknown;
+        for (int vector = 0; vector < vectorCount; vector++) {
+            const bool keepsLow = vector >= nonvolatileVectorsBegin && vector < nonvolatileVectorsEnd;
+            std::fill(vectors[vector].begin() + (keepsLow ? lowLanes : 0), vectors[vector].end(), unknown);
+        }
     }
 
     Value get(int reg) const {
@@ -62,11 +79,13 @@ public:
 
     void moveStack(std::int64_t delta) { stackPointer += delta; }
 
-    bool isZeroVector(int vector) const { return zeroVectors >> vector & 1; }
+    const Lanes& getVector(int vector) const { return vectors[vector]; }
 
-    void setZeroVector(int vector, bool zero) {
-        const std::uint32_t bit = std::uint32_t(1) << vector;
-        zeroVectors = zero ? zeroVectors | bit : zeroVectors & ~bit;
+    void setVector(int vector, const Lanes& lanes) { vectors[vector] = lanes; }
+
+    void zeroUpperVectors(std::size_t firstLane) {
+        for (Lanes& lanes : vectors)
+            std::fill(lanes.begin() + firstLane, lanes.end(), constant(0));
     }
 
     std::optional<std::int64_t> stackOffsetOf(const ZydisDecodedOperandMem& memory) const {
@@ -113,7 +132,7 @@ private:
     std::array<Value, registerCount> registers{};
     std::array<Value, stackSlots> stack{};
     std::int64_t stackPointer = 0;
-    std::uint32_t zeroVectors = 0;
+    std::array<Lanes, vectorCount> vectors{};
 };
 
 Value addressOf(const Machine& machine, const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand& operand,
@@ -147,9 +166,11 @@ Value sourceOf(const Machine& machine, const ZydisDecodedOperand& source) {
     if (source.type != ZYDIS_OPERAND_TYPE_REGISTER)
         return unknown;
     const int reg = indexOf(source.reg.value);
-    if (reg < 0 || source.size < 32)
+    if (reg < 0 || isHighByte(source.reg.value))
         return unknown;
     Value value = machine.get(reg);
+    if (value.kind == ValueKind::StackAddress && source.size != 64)
+        return unknown;
     if (value.kind == ValueKind::Constant)
         value.value &= maskOf(source.size);
     return value;
@@ -178,13 +199,12 @@ void writeMemory(Machine& machine, const ZydisDecodedOperand& destination, Value
     machine.store(*offset, destination.size / 8, value);
 }
 
-bool isVectorZeroing(std::span<const ZydisDecodedOperand> operands) {
-    if (operands.size() < 2 || operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER || vectorIndexOf(operands[0].reg.value) < 0)
-        return false;
-    for (const ZydisDecodedOperand& source : operands.subspan(1))
-        if (source.type != ZYDIS_OPERAND_TYPE_REGISTER || source.reg.value != operands[0].reg.value)
-            return false;
-    return true;
+std::optional<Store> constantStoreOf(const Image& image, const Machine& machine, const ZydisDecodedInstruction& instruction,
+                                     const ZydisDecodedOperand& destination, std::uint64_t address, Value value) {
+    const Value target = addressOf(machine, instruction, destination, address);
+    if (target.kind != ValueKind::Constant || value.kind != ValueKind::Constant || destination.size > 64 || !image.isWritableData(target.value))
+        return std::nullopt;
+    return Store{target.value, value.value & maskOf(destination.size), std::uint8_t(destination.size / 8)};
 }
 
 void clobber(Machine& machine, std::span<const ZydisDecodedOperand> operands) {
@@ -197,12 +217,144 @@ void clobber(Machine& machine, std::span<const ZydisDecodedOperand> operands) {
                 machine.set(reg, unknown);
             const int vector = vectorIndexOf(operand.reg.value);
             if (vector >= 0)
-                machine.setZeroVector(vector, false);
+                machine.setVector(vector, Lanes{});
             continue;
         }
         if (operand.type == ZYDIS_OPERAND_TYPE_MEMORY)
             writeMemory(machine, operand, unknown);
     }
+}
+
+Value maskLane(Value lane, std::uint32_t bits) {
+    if (bits >= 64)
+        return lane;
+    if (lane.kind != ValueKind::Constant)
+        return unknown;
+    lane.value &= maskOf(bits);
+    return lane;
+}
+
+std::size_t lanesIn(std::uint32_t bits) { return (bits + 63) / 64; }
+
+Lanes lanesOf(Image& image, const Machine& machine, const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand& source,
+              std::uint64_t address) {
+    Lanes lanes{};
+    if (source.type == ZYDIS_OPERAND_TYPE_REGISTER) {
+        const int vector = vectorIndexOf(source.reg.value);
+        if (vector >= 0)
+            return machine.getVector(vector);
+        lanes[0] = sourceOf(machine, source);
+        return lanes;
+    }
+    if (source.type != ZYDIS_OPERAND_TYPE_MEMORY)
+        return lanes;
+    const std::size_t count = lanesIn(source.size);
+    if (const std::optional<std::int64_t> offset = machine.stackOffsetOf(source.mem)) {
+        for (std::size_t i = 0; i < count; i++)
+            lanes[i] = maskLane(machine.load(*offset + 8 * std::int64_t(i)), source.size - 64 * std::uint32_t(i));
+        return lanes;
+    }
+    const Value at = addressOf(machine, instruction, source, address);
+    const std::uint64_t bytes = source.size / 8;
+    if (at.kind != ValueKind::Constant || !image.isReadOnlyData(at.value) || !image.isReadOnlyData(at.value + bytes - 1))
+        return lanes;
+    for (std::size_t i = 0; i < count; i++) {
+        std::uint64_t lane = 0;
+        image.read(at.value + 8 * i, std::as_writable_bytes(std::span(&lane, 1)).first(std::min<std::size_t>(8, bytes - 8 * i)));
+        lanes[i] = constant(lane);
+    }
+    return lanes;
+}
+
+//! A VEX or EVEX write to a vector register zeroes the bits above it; a legacy SSE write keeps the bits above 128.
+void writeVector(Machine& machine, const ZydisDecodedInstruction& instruction, int vector, std::uint32_t destinationBits,
+                 std::uint32_t sourceBits, const Lanes& lanes) {
+    Lanes result = machine.getVector(vector);
+    const std::size_t written = lanesIn(sourceBits);
+    const std::size_t cleared = instruction.encoding == ZYDIS_INSTRUCTION_ENCODING_LEGACY ? std::max(lanesIn(destinationBits), lowLanes) : vectorLanes;
+    for (std::size_t i = 0; i < vectorLanes; i++) {
+        if (i < written)
+            result[i] = maskLane(lanes[i], sourceBits - 64 * std::uint32_t(i));
+        else if (i < cleared)
+            result[i] = constant(0);
+    }
+    machine.setVector(vector, result);
+}
+
+bool isFullVectorMove(ZydisMnemonic mnemonic) {
+    switch (mnemonic) {
+    case ZYDIS_MNEMONIC_MOVUPS:
+    case ZYDIS_MNEMONIC_MOVUPD:
+    case ZYDIS_MNEMONIC_MOVAPS:
+    case ZYDIS_MNEMONIC_MOVAPD:
+    case ZYDIS_MNEMONIC_MOVDQU:
+    case ZYDIS_MNEMONIC_MOVDQA:
+    case ZYDIS_MNEMONIC_VMOVUPS:
+    case ZYDIS_MNEMONIC_VMOVUPD:
+    case ZYDIS_MNEMONIC_VMOVAPS:
+    case ZYDIS_MNEMONIC_VMOVAPD:
+    case ZYDIS_MNEMONIC_VMOVDQU:
+    case ZYDIS_MNEMONIC_VMOVDQA:
+    case ZYDIS_MNEMONIC_VMOVDQU8:
+    case ZYDIS_MNEMONIC_VMOVDQU16:
+    case ZYDIS_MNEMONIC_VMOVDQU32:
+    case ZYDIS_MNEMONIC_VMOVDQU64:
+    case ZYDIS_MNEMONIC_VMOVDQA32:
+    case ZYDIS_MNEMONIC_VMOVDQA64:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool isLowVectorMove(ZydisMnemonic mnemonic) {
+    switch (mnemonic) {
+    case ZYDIS_MNEMONIC_MOVSS:
+    case ZYDIS_MNEMONIC_MOVSD:
+    case ZYDIS_MNEMONIC_MOVD:
+    case ZYDIS_MNEMONIC_MOVQ:
+    case ZYDIS_MNEMONIC_VMOVSS:
+    case ZYDIS_MNEMONIC_VMOVSD:
+    case ZYDIS_MNEMONIC_VMOVD:
+    case ZYDIS_MNEMONIC_VMOVQ:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool moveVector(Image& image, Machine& machine, const ZydisDecodedInstruction& instruction, std::span<const ZydisDecodedOperand> operands,
+                std::uint64_t address, std::vector<Store>& stores) {
+    if (operands.size() != 2)
+        return false;
+    const ZydisDecodedOperand& destination = operands[0];
+    const ZydisDecodedOperand& source = operands[1];
+    const bool fromVector = source.type == ZYDIS_OPERAND_TYPE_REGISTER && vectorIndexOf(source.reg.value) >= 0;
+    const int vector = destination.type == ZYDIS_OPERAND_TYPE_REGISTER ? vectorIndexOf(destination.reg.value) : -1;
+    if (!fromVector && vector < 0)
+        return false;
+    if (fromVector && vector >= 0 && !isFullVectorMove(instruction.mnemonic))
+        return false;
+    const Lanes lanes = lanesOf(image, machine, instruction, source, address);
+    if (vector >= 0) {
+        writeVector(machine, instruction, vector, destination.size, source.size, lanes);
+        return true;
+    }
+    if (destination.type == ZYDIS_OPERAND_TYPE_REGISTER) {
+        writeRegister(machine, destination, lanes[0]);
+        return true;
+    }
+    for (std::size_t i = 0; i < lanesIn(destination.size); i++) {
+        const std::uint32_t bits = std::min<std::uint32_t>(64, destination.size - 64 * std::uint32_t(i));
+        ZydisDecodedOperand part = destination;
+        part.size = std::uint16_t(bits);
+        part.mem.disp.value += 8 * std::int64_t(i);
+        const Value lane = maskLane(lanes[i], bits);
+        writeMemory(machine, part, lane);
+        if (const std::optional<Store> store = constantStoreOf(image, machine, instruction, part, address, lane))
+            stores.push_back(*store);
+    }
+    return true;
 }
 
 bool setsConstant(const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand* operands) {
@@ -278,7 +430,24 @@ void Code::traverse(const std::uint64_t function) {
 }
 
 std::span<const Call> Code::findCalls(const std::uint64_t function) {
-    calls.clear();
+    return analyze(function).calls;
+}
+
+std::span<const Store> Code::findStores(const std::uint64_t function) {
+    return analyze(function).stores;
+}
+
+const References& Code::findReferences(const std::uint64_t function) {
+    return analyze(function).references;
+}
+
+const Analysis& Code::analyze(const std::uint64_t function) {
+    if (const auto found = analyses.find(function); found != analyses.end())
+        return found->second;
+    Analysis analysis;
+    std::vector<Call>& calls = analysis.calls;
+    std::vector<Store>& stores = analysis.stores;
+    References& references = analysis.references;
     traverse(function);
     Machine machine;
     std::uint64_t previousEnd = 0;
@@ -293,12 +462,27 @@ std::span<const Call> Code::findCalls(const std::uint64_t function) {
             case ZYDIS_MNEMONIC_JMP: {
                 const std::optional<std::uint64_t> target = branchTarget(address);
                 const bool call = instruction.mnemonic == ZYDIS_MNEMONIC_CALL;
-                if (target && (call || image.isFunctionStart(*target)))
+                if (target && (call || image.isFunctionStart(*target))) {
                     calls.push_back(machine.makeCall(*target));
+                    references.code.push_back(*target);
+                }
                 if (call)
                     machine.clearVolatile();
                 continue;
             }
+            default:
+                break;
+            }
+            for (const ZydisDecodedOperand& operand : visible) {
+                if (operand.type != ZYDIS_OPERAND_TYPE_MEMORY || operand.mem.base != ZYDIS_REGISTER_RIP)
+                    continue;
+                const std::uint64_t target = address + instruction.length + std::uint64_t(operand.mem.disp.value);
+                if (image.isData(target))
+                    references.data.push_back(target);
+                else if (instruction.mnemonic == ZYDIS_MNEMONIC_LEA && image.isCode(target))
+                    references.code.push_back(target);
+            }
+            switch (instruction.mnemonic) {
             case ZYDIS_MNEMONIC_PUSH:
                 machine.moveStack(-8);
                 continue;
@@ -307,13 +491,22 @@ std::span<const Call> Code::findCalls(const std::uint64_t function) {
                 clobber(machine, visible);
                 continue;
             case ZYDIS_MNEMONIC_SUB:
-            case ZYDIS_MNEMONIC_ADD: {
-                const bool stack = visible[0].type == ZYDIS_OPERAND_TYPE_REGISTER && indexOf(visible[0].reg.value) == rsp &&
-                                   visible[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE;
-                if (!stack)
+            case ZYDIS_MNEMONIC_ADD:
+            case ZYDIS_MNEMONIC_OR: {
+                if (visible[0].type != ZYDIS_OPERAND_TYPE_REGISTER || visible[1].type != ZYDIS_OPERAND_TYPE_IMMEDIATE)
                     break;
-                const std::int64_t delta = visible[1].imm.value.s;
-                machine.moveStack(instruction.mnemonic == ZYDIS_MNEMONIC_SUB ? -delta : delta);
+                const std::uint64_t operand = visible[1].imm.value.u;
+                if (indexOf(visible[0].reg.value) == rsp && instruction.mnemonic != ZYDIS_MNEMONIC_OR) {
+                    machine.moveStack(instruction.mnemonic == ZYDIS_MNEMONIC_SUB ? -std::int64_t(operand) : std::int64_t(operand));
+                    continue;
+                }
+                Value value = sourceOf(machine, visible[0]);
+                if (value.kind != ValueKind::Constant)
+                    break;
+                value.value = instruction.mnemonic == ZYDIS_MNEMONIC_OR ? value.value | operand
+                              : instruction.mnemonic == ZYDIS_MNEMONIC_ADD ? value.value + operand
+                                                                           : value.value - operand;
+                writeRegister(machine, visible[0], value);
                 continue;
             }
             case ZYDIS_MNEMONIC_LEA:
@@ -321,10 +514,13 @@ std::span<const Call> Code::findCalls(const std::uint64_t function) {
                 continue;
             case ZYDIS_MNEMONIC_MOV: {
                 const Value value = sourceOf(machine, visible[1]);
-                if (visible[0].type == ZYDIS_OPERAND_TYPE_REGISTER)
+                if (visible[0].type == ZYDIS_OPERAND_TYPE_REGISTER) {
                     writeRegister(machine, visible[0], value);
-                else
-                    writeMemory(machine, visible[0], value);
+                    continue;
+                }
+                writeMemory(machine, visible[0], value);
+                if (const std::optional<Store> store = constantStoreOf(image, machine, instruction, visible[0], address, value))
+                    stores.push_back(*store);
                 continue;
             }
             case ZYDIS_MNEMONIC_XOR:
@@ -334,32 +530,30 @@ std::span<const Call> Code::findCalls(const std::uint64_t function) {
                 writeRegister(machine, visible[0], constant(0));
                 continue;
             case ZYDIS_MNEMONIC_XORPS:
+            case ZYDIS_MNEMONIC_XORPD:
             case ZYDIS_MNEMONIC_PXOR:
             case ZYDIS_MNEMONIC_VXORPS:
+            case ZYDIS_MNEMONIC_VXORPD:
             case ZYDIS_MNEMONIC_VPXOR:
-                if (!isVectorZeroing(visible))
+            case ZYDIS_MNEMONIC_VPXORD:
+            case ZYDIS_MNEMONIC_VPXORQ: {
+                const int vector = visible[0].type == ZYDIS_OPERAND_TYPE_REGISTER ? vectorIndexOf(visible[0].reg.value) : -1;
+                const bool zeroing = vector >= 0 && std::ranges::all_of(visible.subspan(1), [&](const ZydisDecodedOperand& source) {
+                    return source.type == ZYDIS_OPERAND_TYPE_REGISTER && source.reg.value == visible[0].reg.value;
+                });
+                if (!zeroing)
                     break;
-                machine.setZeroVector(vectorIndexOf(visible[0].reg.value), true);
-                continue;
-            case ZYDIS_MNEMONIC_MOVUPS:
-            case ZYDIS_MNEMONIC_MOVAPS:
-            case ZYDIS_MNEMONIC_MOVDQU:
-            case ZYDIS_MNEMONIC_MOVDQA:
-            case ZYDIS_MNEMONIC_VMOVUPS:
-            case ZYDIS_MNEMONIC_VMOVAPS:
-            case ZYDIS_MNEMONIC_VMOVDQU:
-            case ZYDIS_MNEMONIC_VMOVDQA: {
-                //! Compilers clear several stack arguments at once with a store of a zeroed vector register.
-                if (visible[0].type != ZYDIS_OPERAND_TYPE_MEMORY || visible[1].type != ZYDIS_OPERAND_TYPE_REGISTER)
-                    break;
-                const std::optional<std::int64_t> offset = machine.stackOffsetOf(visible[0].mem);
-                if (!offset)
-                    break;
-                const bool zero = machine.isZeroVector(vectorIndexOf(visible[1].reg.value));
-                for (std::uint32_t part = 0; part < visible[0].size / 64; part++)
-                    machine.store(*offset + 8 * part, 8, zero ? constant(0) : unknown);
+                Lanes zero;
+                zero.fill(constant(0));
+                writeVector(machine, instruction, vector, visible[0].size, visible[0].size, zero);
                 continue;
             }
+            case ZYDIS_MNEMONIC_VZEROUPPER:
+                machine.zeroUpperVectors(lowLanes);
+                continue;
+            case ZYDIS_MNEMONIC_VZEROALL:
+                machine.zeroUpperVectors(0);
+                continue;
             case ZYDIS_MNEMONIC_AND:
                 //! MSVC clears a stack argument with `and qword ptr [rsp+N], 0`.
                 if (visible[0].type != ZYDIS_OPERAND_TYPE_MEMORY || visible[1].type != ZYDIS_OPERAND_TYPE_IMMEDIATE ||
@@ -368,40 +562,15 @@ std::span<const Call> Code::findCalls(const std::uint64_t function) {
                 writeMemory(machine, visible[0], constant(0));
                 continue;
             default:
+                if ((isFullVectorMove(instruction.mnemonic) || isLowVectorMove(instruction.mnemonic)) &&
+                    moveVector(image, machine, instruction, visible, address, stores))
+                    continue;
                 break;
             }
             clobber(machine, std::span<const ZydisDecodedOperand>(operands, instruction.operand_count));
         }
     }
-    return calls;
-}
-
-const References& Code::findReferences(const std::uint64_t function) {
-    if (const auto found = references.find(function); found != references.end())
-        return found->second;
-    References result;
-    traverse(function);
-    for (const auto [begin, end] : covered) {
-        for (std::uint64_t address = begin; address < end && decode(address); address += instruction.length) {
-            const bool call = instruction.mnemonic == ZYDIS_MNEMONIC_CALL;
-            if (call || instruction.mnemonic == ZYDIS_MNEMONIC_JMP) {
-                const std::optional<std::uint64_t> target = branchTarget(address);
-                if (target && (call || image.isFunctionStart(*target)))
-                    result.code.push_back(*target);
-                continue;
-            }
-            for (const ZydisDecodedOperand& operand : std::span(operands, instruction.operand_count_visible)) {
-                if (operand.type != ZYDIS_OPERAND_TYPE_MEMORY || operand.mem.base != ZYDIS_REGISTER_RIP)
-                    continue;
-                const std::uint64_t target = address + instruction.length + std::uint64_t(operand.mem.disp.value);
-                if (image.isData(target))
-                    result.data.push_back(target);
-                else if (instruction.mnemonic == ZYDIS_MNEMONIC_LEA && image.isCode(target))
-                    result.code.push_back(target);
-            }
-        }
-    }
-    return references.emplace(function, std::move(result)).first->second;
+    return analyses.emplace(function, std::move(analysis)).first->second;
 }
 
 //! A thunk only sets registers to constants, as UE 5.8 StaticClass does with `xor ecx, ecx`, before it jumps on.
