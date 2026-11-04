@@ -18,6 +18,7 @@ constexpr std::uint32_t exceptionDirectory = 3;
 constexpr std::uint32_t relocationDirectory = 5;
 constexpr std::uint16_t relocationDir64 = 10;
 constexpr std::uint32_t runtimeFunctionSize = 12;
+constexpr std::uint8_t unwindChainInfo = 4;
 constexpr std::size_t maxStringLength = 4096;
 constexpr std::size_t stringChunk = 128;
 
@@ -246,10 +247,11 @@ bool Image::startsWithUtf16(const std::uint64_t address, const std::u16string_vi
     return std::u16string_view(units, prefix.size()) == prefix;
 }
 
-std::optional<std::uint64_t> Image::getFunctionEnd(const std::uint64_t function) {
-    if (function < base)
-        return std::nullopt;
-    const std::uint64_t rva = function - base;
+//! A chained entry (UNW_FLAG_CHAININFO) is a fragment of a function, not the start of one.
+bool Image::isFunctionStart(const std::uint64_t address) {
+    if (address < base)
+        return false;
+    const std::uint64_t rva = address - base;
     std::uint32_t low = 0;
     std::uint32_t high = functionCount;
     //! The exception directory is sorted by start address.
@@ -262,11 +264,11 @@ std::optional<std::uint64_t> Image::getFunctionEnd(const std::uint64_t function)
             high = middle;
     }
     if (low == functionCount)
-        return std::nullopt;
+        return false;
     const std::uint64_t entry = functionTable + std::uint64_t(low) * runtimeFunctionSize;
     if (read<std::uint32_t>(entry) != rva)
-        return std::nullopt;
-    return base + read<std::uint32_t>(entry + 4);
+        return false;
+    return !(read<std::uint8_t>(base + read<std::uint32_t>(entry + 8)) >> 3 & unwindChainInfo);
 }
 
 std::vector<std::uint64_t> Image::readPointerSlots(const Section& section) {

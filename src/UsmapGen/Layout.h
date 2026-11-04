@@ -66,9 +66,13 @@ struct Layout {
     std::uint8_t structProperties;
     std::uint8_t structPropertyCount;
     bool structPropertyCount16;
+    std::uint8_t classDependencies;
+    std::uint8_t classDependencyCount;
     std::uint8_t classProperties;
     std::uint8_t classPropertyCount;
     bool classPropertyCountPacked;
+    std::uint8_t packageSingletons;
+    std::uint8_t packageSingletonCount;
     std::uint8_t enumEnumerators;
     std::uint8_t enumEnumeratorCount;
     bool enumEnumeratorCount16;
@@ -80,10 +84,10 @@ constexpr std::uint8_t structName = 0x18;
 constexpr std::uint8_t enumName = 0x10;
 constexpr std::uint8_t enumeratorSize = 0x10;
 
-constexpr Layout layout418{"4.18 to 4.21", 0x08, 0x00, 0x20, false, 0x38, 0x38, 0x40, false, 0x28, 0x30, false, 0x38, 0x40, false};
-constexpr Layout layout422{"4.22 to 5.0", 0x00, 0x18, 0x20, false, 0x28, 0x30, 0x38, false, 0x28, 0x40, false, 0x20, 0x28, false};
-constexpr Layout layout51{"5.1 to 5.2", 0x00, 0x18, 0x20, false, 0x40, 0x30, 0x38, false, 0x28, 0x40, false, 0x20, 0x28, false};
-constexpr Layout layout53{"5.3 and later", 0x00, 0x18, 0x30, true, 0x38, 0x20, 0x28, true, 0x28, 0x38, true, 0x20, 0x2C, true};
+constexpr Layout layout418{"4.18 to 4.21", 0x08, 0x00, 0x20, false, 0x38, 0x38, 0x40, false, 0x08, 0x10, 0x28, 0x30, false, 0x18, 0x20, 0x38, 0x40, false};
+constexpr Layout layout422{"4.22 to 5.0", 0x00, 0x18, 0x20, false, 0x28, 0x30, 0x38, false, 0x18, 0x38, 0x28, 0x40, false, 0x08, 0x10, 0x20, 0x28, false};
+constexpr Layout layout51{"5.1 to 5.2", 0x00, 0x18, 0x20, false, 0x40, 0x30, 0x38, false, 0x18, 0x38, 0x28, 0x40, false, 0x08, 0x10, 0x20, 0x28, false};
+constexpr Layout layout53{"5.3 and later", 0x00, 0x18, 0x30, true, 0x38, 0x20, 0x28, true, 0x18, 0x38, 0x28, 0x38, true, 0x08, 0x10, 0x20, 0x2C, true};
 
 constexpr std::array<const Layout*, 2> engine4Layouts{&layout418, &layout422};
 constexpr std::array<const Layout*, 3> engine5Layouts{&layout422, &layout51, &layout53};

@@ -23,6 +23,7 @@ constexpr std::uint32_t maxProperties = 0xFFFF;
 constexpr std::int64_t maxEnumerators = 0xFFFF;
 constexpr std::uint32_t maxArrayDim = 0xFF;
 constexpr int maxGetterDepth = 2;
+constexpr std::uint32_t maxDependencies = 0xFF;
 constexpr int maxTypeDepth = 16;
 constexpr std::size_t engine4SuperArgument = 11;
 constexpr std::size_t engine425SuperArgument = 12;
@@ -30,8 +31,8 @@ constexpr std::uint32_t rawStruct = 0x19;
 constexpr std::uint32_t firstEngine423Kind = 0x1E;
 constexpr std::uint32_t maxEngine418Kind = 0x1D;
 constexpr std::uint32_t maxGenFlagsKind = 0x3F;
-constexpr std::uint32_t unknownPackage = ~0u;
 constexpr std::u16string_view scriptPrefix = u"/Script/";
+constexpr std::string_view scriptPrefixUtf8 = "/Script/";
 
 struct ClassRecordLayout {
     std::uint8_t stride;
@@ -55,7 +56,11 @@ struct ClassRecord {
     std::uint64_t construct;
     std::uint64_t getter;
     std::uint64_t name;
-    bool intrinsic;
+};
+
+struct SingleType {
+    std::uint64_t registrar;
+    std::uint64_t name;
 };
 
 struct TypeRecord {
@@ -63,14 +68,19 @@ struct TypeRecord {
     std::uint32_t package;
 };
 
-struct Construction {
-    std::uint64_t target;
+enum class ParamsKind : std::uint8_t { Struct, Enum, Class, Package };
+
+struct ClassInfo {
+    std::uint32_t name;
     std::uint64_t params;
+    std::uint64_t construct;
+    std::uint64_t getter;
+    std::string registeredName;
 };
 
-struct ClassBody {
-    std::uint64_t name;
-    std::uint64_t superGetter;
+struct ClassBodySignature {
+    std::uint64_t function;
+    std::size_t superArgument;
 };
 
 struct EnumName {
@@ -199,24 +209,28 @@ private:
     bool collectBatches(std::span<const std::uint64_t> initializers);
     void collectSingles(std::span<const std::uint64_t> initializers);
     void readEngine5Records(std::span<const Batch> batches);
-    std::uint32_t addPackage(std::uint64_t name);
-    void collectPackageTypes(std::uint64_t structConstructor, std::uint64_t enumConstructor);
+    void classifySingles();
+    void collectPackageTypes();
 
-    std::uint64_t findParams(std::uint64_t function);
-    Construction findConstruction(std::uint64_t function);
-    Construction findDirectConstruction(std::uint64_t function);
-    std::uint64_t findStaticTypeConstruct(std::uint64_t function);
+    bool isParams(std::uint64_t params, ParamsKind kind);
+    std::uint64_t findParams(std::uint64_t function, ParamsKind kind);
+    void collectParams(std::uint64_t function, ParamsKind kind, std::vector<std::uint64_t>& found);
+    std::uint32_t packageOf(std::uint64_t params);
 
     bool isWideName(std::uint64_t address);
     bool isName(std::uint64_t address);
+    bool isIdentifier(std::uint64_t address);
     void detectLayout();
     std::uint64_t scoreLayout(const Layout& candidate, std::span<const std::uint64_t> sample);
     void detectTypeNumbering();
     void detectPropertyOrder();
-    void detectClassBody();
-    std::optional<ClassBody> findClassBody(std::uint64_t getter, int depth);
+    std::optional<Call> findClassBody(std::uint64_t function, std::string_view name, int depth);
+    std::optional<ClassBodySignature> findClassBodySignature();
+    std::optional<std::size_t> findIntrinsicSuper(std::size_t index, std::optional<ClassBodySignature>& signature);
 
     std::uint32_t readPropertyCount(std::uint64_t at, bool count16);
+    std::uint32_t readClassPropertyCount(std::uint64_t params);
+    std::uint32_t readDependencyCount(std::uint64_t params);
     std::optional<Kind> readKind(std::uint64_t property);
     std::uint8_t readArrayDim(std::uint64_t property);
     std::span<const std::uint64_t> readPointers(std::uint64_t array, std::uint32_t count);
@@ -226,9 +240,10 @@ private:
     std::uint32_t resolveStruct(std::uint64_t function);
     std::uint32_t resolveEnum(std::uint64_t function);
     std::uint32_t queueStruct(std::uint64_t params);
-    std::uint32_t queueEnum(std::uint64_t params, std::uint32_t package);
-    std::uint32_t resolveClass(std::uint64_t getter);
+    std::uint32_t queueEnum(std::uint64_t params);
+    std::optional<std::size_t> findClass(std::uint64_t function);
 
+    void collectClasses();
     void readClasses();
     void readStruct(std::uint64_t params);
     void readEnum(const TypeRecord& record);
@@ -241,17 +256,20 @@ private:
     const Layout* layout = nullptr;
     TypeNumbering numbering = TypeNumbering::Engine5;
     bool backward = true;
-    std::uint64_t classBody = 0;
-    std::size_t superArgument = engine425SuperArgument;
 
-    std::vector<std::string> packages;
     std::vector<ClassRecord> classRecords;
+    std::vector<SingleType> singleTypes;
+    std::vector<std::uint64_t> registeredStructs;
+    std::vector<std::uint64_t> registeredEnums;
+    std::vector<ClassInfo> classes;
+    std::unordered_map<std::uint64_t, std::size_t> classOfFunction;
+    std::vector<std::string> packages;
+    std::unordered_map<std::uint64_t, std::uint32_t> packageOfParams;
     std::vector<std::uint64_t> structQueue;
     std::vector<TypeRecord> enumQueue;
-    std::unordered_map<std::uint64_t, Construction> constructionOfFunction;
+    std::unordered_map<std::uint64_t, std::uint64_t> paramsOfFunction;
     std::unordered_map<std::uint64_t, std::uint32_t> structNames;
     std::unordered_map<std::uint64_t, std::uint32_t> enumNames;
-    std::unordered_map<std::uint64_t, std::uint32_t> classNames;
     std::unordered_set<std::string> usedEnumNames;
 
     std::vector<std::uint64_t> pointers;
@@ -293,11 +311,6 @@ std::vector<std::uint64_t> Reflection::findInitializers() {
     return {};
 }
 
-std::uint32_t Reflection::addPackage(const std::uint64_t name) {
-    packages.push_back(image.readUtf16(name));
-    return std::uint32_t(packages.size() - 1);
-}
-
 bool Reflection::isWideName(const std::uint64_t address) {
     if (!image.isReadOnlyData(address))
         return false;
@@ -310,6 +323,14 @@ bool Reflection::isName(const std::uint64_t address) {
         return false;
     const char first = image.read<char>(address);
     return first == '_' || (first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z');
+}
+
+//! The name of a native type is a C++ identifier, with :: in the CppType of a namespaced enum.
+bool Reflection::isIdentifier(const std::uint64_t address) {
+    if (!isName(address))
+        return false;
+    const std::string text = image.readUtf8(address);
+    return std::ranges::all_of(text, [](char c) { return c == '_' || c == ':' || (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); });
 }
 
 //! UE 5 calls RegisterCompiledInInfo(Package, Classes, N, Structs, N, Enums, N) once per generated file.
@@ -391,29 +412,27 @@ void Reflection::readEngine5Records(std::span<const Batch> batches) {
         return;
     }
     for (const Batch& batch : batches) {
-        const std::uint32_t package = addPackage(batch.package);
         for (std::uint64_t i = 0; i < batch.counts[0]; i++) {
             const std::uint64_t record = batch.arrays[0] + i * classLayout->stride;
             const std::uint64_t construct = image.read<std::uint64_t>(record);
             const std::uint64_t getter = classLayout->name == recordName ? image.read<std::uint64_t>(record + 8) : construct;
-            classRecords.push_back({construct, getter, image.read<std::uint64_t>(record + classLayout->name), false});
+            classRecords.push_back({construct, getter, image.read<std::uint64_t>(record + classLayout->name)});
         }
         for (std::uint64_t i = 0; i < batch.counts[1]; i++)
-            structQueue.push_back(image.read<std::uint64_t>(batch.arrays[1] + i * structStride));
+            registeredStructs.push_back(image.read<std::uint64_t>(batch.arrays[1] + i * structStride));
         for (std::uint64_t i = 0; i < batch.counts[2]; i++) {
             const std::uint64_t record = batch.arrays[2] + i * enumRecordStride;
             if (!isWideName(image.read<std::uint64_t>(record + enumRecordName))) {
                 image.fail(std::format("The enum registration record at {:#x} has no name.", record));
                 return;
             }
-            enumQueue.push_back({image.read<std::uint64_t>(record), package});
+            registeredEnums.push_back(image.read<std::uint64_t>(record));
         }
     }
 }
 
-//! Single registrations: UE 4 class (Register, StaticClass, Name, Package), UE 5 intrinsic class (Register, StaticClass, Package, Name), struct or enum (Register, Package, Name).
+//! Single registrations: UE 4 class (Register, StaticClass, Name, Package), UE 5 intrinsic class (Register, StaticClass, Package, Name), UE 5.8 intrinsic class (StaticClass, Package, Name), struct or enum (Register, Package, Name).
 void Reflection::collectSingles(std::span<const std::uint64_t> initializers) {
-    std::vector<std::pair<std::uint64_t, std::uint32_t>> types;
     for (const std::uint64_t initializer : initializers) {
         for (const Call& call : code.findCalls(initializer)) {
             const auto argument = [&](std::size_t index) { return call.getConstant(index).value_or(0); };
@@ -422,113 +441,160 @@ void Reflection::collectSingles(std::span<const std::uint64_t> initializers) {
                     continue;
                 if (package >= 3 && isWideName(argument(package - 1)) && image.isCode(argument(package - 2)) &&
                     image.isCode(argument(package - 3))) {
-                    classRecords.push_back({argument(package - 3), argument(package - 2), argument(package - 1), false});
+                    classRecords.push_back({argument(package - 3), argument(package - 2), argument(package - 1)});
                     break;
                 }
                 if (!image.isCode(argument(package - 1)) || !isWideName(argument(package + 1)))
                     continue;
                 if (package >= 2 && image.isCode(argument(package - 2))) {
-                    classRecords.push_back({argument(package - 2), argument(package - 1), argument(package + 1), true});
+                    classRecords.push_back({argument(package - 2), argument(package - 1), argument(package + 1)});
                     break;
                 }
-                types.emplace_back(argument(package - 1), addPackage(argument(package)));
+                singleTypes.push_back({argument(package - 1), argument(package + 1)});
                 break;
             }
         }
     }
-    for (const auto [registrar, package] : types) {
-        const std::uint64_t params = findParams(registrar);
-        if (params == 0) {
-            image.fail(std::format("The registered type at {:#x} has no parameter table.", registrar));
-            return;
-        }
-        const std::uint64_t field = image.read<std::uint64_t>(params + structOps);
-        //! FStructParams has the StructOps function at 0x10, FEnumParams has the name there.
-        if (image.isReadOnlyData(field))
-            enumQueue.push_back({registrar, package});
-        else
-            structQueue.push_back(registrar);
-    }
 }
 
-Construction Reflection::findDirectConstruction(const std::uint64_t function) {
-    for (const Call& call : code.findCalls(function)) {
-        const std::optional<std::uint64_t> singleton = call.getConstant(0);
-        const std::optional<std::uint64_t> params = call.getConstant(1);
-        if (singleton && params && image.isWritableData(*singleton) && image.isData(*params))
-            return {call.target, *params};
-    }
-    return {};
-}
-
-//! A StaticStruct or StaticEnum function passes the Z_Construct function to GetStaticStruct or GetStaticEnum.
-std::uint64_t Reflection::findStaticTypeConstruct(const std::uint64_t function) {
-    for (const Call& call : code.findCalls(function)) {
-        const std::optional<std::uint64_t> construct = call.getConstant(0);
-        const std::optional<std::uint64_t> name = call.getConstant(2);
-        if (construct && name && image.isCode(*construct) && isWideName(*name))
-            return *construct;
-    }
-    return 0;
-}
-
-//! A Z_Construct function calls UECodeGen_Private::ConstructU*(Singleton, Params).
-Construction Reflection::findConstruction(std::uint64_t function) {
-    function = code.followThunks(function);
-    if (const auto found = constructionOfFunction.find(function); found != constructionOfFunction.end())
-        return found->second;
-    Construction construction = findDirectConstruction(function);
-    if (construction.params == 0) {
-        const std::uint64_t construct = findStaticTypeConstruct(function);
-        if (construct != 0)
-            construction = findDirectConstruction(code.followThunks(construct));
-    }
-    constructionOfFunction.emplace(function, construction);
-    return construction;
-}
-
-std::uint64_t Reflection::findParams(const std::uint64_t function) { return findConstruction(function).params; }
-
-//! FPackageParams is {NameUTF8, SingletonFuncArray, NumSingletons}; the singletons also build unregistered no-export structs.
-void Reflection::collectPackageTypes(const std::uint64_t structConstructor, const std::uint64_t enumConstructor) {
-    std::vector<std::uint64_t> outers;
-    std::unordered_set<std::uint64_t> seen;
-    const auto addOuter = [&](std::uint64_t params) {
-        const std::uint64_t outer = code.followThunks(image.read<std::uint64_t>(params));
-        if (seen.insert(outer).second)
-            outers.push_back(outer);
-    };
-    for (const std::uint64_t params : structQueue)
-        addOuter(params);
-    for (const TypeRecord& record : enumQueue)
-        addOuter(record.params);
-    for (const std::uint64_t outer : outers) {
-        const std::uint64_t params = findParams(outer);
-        const std::uint64_t name = image.read<std::uint64_t>(params);
-        if (params == 0 || !image.isReadOnlyData(name) || !image.readUtf8(name).starts_with("/Script/"))
+//! A struct-shaped single registration is a struct, an enum, or a UE 5.8 intrinsic class; its parameter table tells which, for structs before the layout, for enums and classes after it.
+void Reflection::classifySingles() {
+    for (const auto [registrar, name] : singleTypes) {
+        if (findParams(registrar, ParamsKind::Struct) != 0)
             continue;
-        const std::uint64_t singletons = image.read<std::uint64_t>(params + 8);
-        const std::uint32_t count = image.read<std::uint32_t>(params + 0x10);
+        if (findParams(registrar, ParamsKind::Enum) != 0)
+            registeredEnums.push_back(registrar);
+        else
+            classRecords.push_back({registrar, registrar, name});
+    }
+}
+
+//! FStructParams {OuterFunc, SuperFunc, StructOpsFunc, NameUTF8, ...}, FEnumParams {OuterFunc, DisplayNameFunc, NameUTF8, ..., CppTypeUTF8, Enumerators, ...}, FClassParams {ClassNoRegisterFunc, ...}, FPackageParams {NameUTF8, SingletonFuncArray, NumSingletons, ...}.
+bool Reflection::isParams(const std::uint64_t params, const ParamsKind kind) {
+    if (!image.isData(params))
+        return false;
+    const auto field = [&](std::uint64_t offset) { return image.read<std::uint64_t>(params + offset); };
+    const auto codeOrNull = [&](std::uint64_t offset) { return field(offset) == 0 || image.isCode(field(offset)); };
+    switch (kind) {
+    case ParamsKind::Package: {
+        const std::uint64_t name = field(0);
+        return image.isReadOnlyData(name) && image.readUtf8(name).starts_with(scriptPrefixUtf8);
+    }
+    case ParamsKind::Struct:
+        return image.isCode(field(0)) && codeOrNull(8) && codeOrNull(structOps) && isIdentifier(field(structName));
+    case ParamsKind::Enum: {
+        if (layout == nullptr || !image.isCode(field(0)) || !codeOrNull(8) || !isIdentifier(field(enumName)) || !isIdentifier(field(layout->enumEnumerators - 8)))
+            return false;
+        const std::uint64_t values = field(layout->enumEnumerators);
+        const std::int64_t count = layout->enumEnumeratorCount16 ? image.read<std::int16_t>(params + layout->enumEnumeratorCount)
+                                                                 : image.read<std::int32_t>(params + layout->enumEnumeratorCount);
+        //! An enum without enumerators has no enumerator array; a delegate's FFunctionParams has other data there.
+        if (count < 0 || count >= maxEnumerators || (count == 0 ? values != 0 : !image.isData(values)))
+            return false;
+        for (std::int64_t i = 0; i < count; i++)
+            if (!isIdentifier(image.read<std::uint64_t>(values + std::uint64_t(i) * enumeratorSize)))
+                return false;
+        //! The outer of an enum is its package; the outer of a delegate can be a class.
+        return findParams(field(0), ParamsKind::Package) != 0;
+    }
+    case ParamsKind::Class: {
+        if (layout == nullptr || !image.isCode(field(0)))
+            return false;
+        const std::uint64_t dependencies = field(layout->classDependencies);
+        const std::uint32_t dependencyCount = readDependencyCount(params);
+        if (dependencyCount == 0 || dependencyCount > maxDependencies || !image.isData(dependencies))
+            return false;
+        for (std::uint32_t i = 0; i < dependencyCount; i++)
+            if (!image.isCode(image.read<std::uint64_t>(dependencies + 8 * i)))
+                return false;
+        const std::uint32_t propertyCount = readClassPropertyCount(params);
+        return propertyCount <= maxProperties && (propertyCount == 0 || image.isData(field(layout->classProperties)));
+    }
+    }
+    return false;
+}
+
+void Reflection::collectParams(const std::uint64_t function, const ParamsKind kind, std::vector<std::uint64_t>& found) {
+    for (const std::uint64_t target : code.findReferences(function).data)
+        if (!std::ranges::contains(found, target) && isParams(target, kind))
+            found.push_back(target);
+}
+
+//! A type's Z_Construct references one parameter table of its kind; StaticStruct and StaticEnum reach it through the Z_Construct that they pass to GetStaticStruct or GetStaticEnum.
+std::uint64_t Reflection::findParams(std::uint64_t function, const ParamsKind kind) {
+    function = code.followThunks(function);
+    const std::uint64_t key = function << 2 | std::uint64_t(kind);
+    if (const auto known = paramsOfFunction.find(key); known != paramsOfFunction.end())
+        return known->second;
+    std::vector<std::uint64_t> found;
+    collectParams(function, kind, found);
+    if (found.empty() && (kind == ParamsKind::Struct || kind == ParamsKind::Enum)) {
+        const std::vector<std::uint64_t> callees = code.findReferences(function).code;
+        for (const std::uint64_t callee : callees)
+            collectParams(code.followThunks(callee), kind, found);
+    }
+    if (found.size() > 1) {
+        image.fail(std::format("The function at {:#x} references {} parameter tables of one kind, at {:#x} and {:#x}.", function, found.size(), found[0], found[1]));
+        found.clear();
+    }
+    const std::uint64_t params = found.empty() ? 0 : found[0];
+    paramsOfFunction.emplace(key, params);
+    return params;
+}
+
+//! The OuterFunc of a struct or an enum constructs its package.
+std::uint32_t Reflection::packageOf(const std::uint64_t params) {
+    const std::uint64_t package = findParams(image.read<std::uint64_t>(params), ParamsKind::Package);
+    if (package == 0) {
+        image.fail(std::format("The outer of the parameters at {:#x} is no package.", params));
+        return 0;
+    }
+    if (const auto found = packageOfParams.find(package); found != packageOfParams.end())
+        return found->second;
+    packages.push_back(image.readUtf8(image.read<std::uint64_t>(package)));
+    const std::uint32_t index = std::uint32_t(packages.size() - 1);
+    packageOfParams.emplace(package, index);
+    return index;
+}
+
+//! FPackageParams lists the singletons after the name, or from 4.18 to 4.21 after the flags and two CRCs of a package; they also build the no-export structs, which nothing registers.
+void Reflection::collectPackageTypes() {
+    std::vector<std::uint64_t> packageParams;
+    for (const auto [params, index] : packageOfParams)
+        packageParams.push_back(params);
+    std::ranges::sort(packageParams);
+    for (const std::uint64_t params : packageParams) {
+        const std::uint64_t singletons = image.read<std::uint64_t>(params + layout->packageSingletons);
+        const std::uint32_t count = image.read<std::uint32_t>(params + layout->packageSingletonCount);
         if (count > maxSingletons || (count > 0 && !image.isData(singletons))) {
             image.fail(std::format("The package parameters at {:#x} have {} singletons.", params, count));
             return;
         }
-        packages.push_back(image.readUtf8(name));
-        const std::uint32_t package = std::uint32_t(packages.size() - 1);
-        for (const std::uint64_t function : readPointers(singletons, count)) {
-            const Construction construction = findConstruction(function);
-            if (construction.params == 0)
-                continue;
-            if (construction.target == structConstructor)
-                queueStruct(construction.params);
-            if (construction.target == enumConstructor)
-                queueEnum(construction.params, package);
+        const std::vector<std::uint64_t> functions(std::from_range, readPointers(singletons, count));
+        for (const std::uint64_t function : functions) {
+            if (const std::uint64_t structParams = findParams(function, ParamsKind::Struct); structParams != 0)
+                queueStruct(structParams);
+            else if (const std::uint64_t enumParams = findParams(function, ParamsKind::Enum); enumParams != 0)
+                queueEnum(enumParams);
+            if (image.getError())
+                return;
         }
     }
 }
 
 std::uint32_t Reflection::readPropertyCount(const std::uint64_t at, const bool count16) {
     return count16 ? image.read<std::uint16_t>(at) : image.read<std::uint32_t>(at);
+}
+
+//! UE 5.3 packs NumDependencySingletons:4, NumFunctions:11, NumProperties:11 and NumImplementedInterfaces:6 into one word.
+std::uint32_t Reflection::readClassPropertyCount(const std::uint64_t params) {
+    const std::uint32_t value = image.read<std::uint32_t>(params + layout->classPropertyCount);
+    return layout->classPropertyCountPacked ? value >> 15 & 0x7FF : value;
+}
+
+std::uint32_t Reflection::readDependencyCount(const std::uint64_t params) {
+    const std::uint32_t value = image.read<std::uint32_t>(params + layout->classDependencyCount);
+    return layout->classPropertyCountPacked ? value & 0xF : value;
 }
 
 std::uint64_t Reflection::scoreLayout(const Layout& candidate, std::span<const std::uint64_t> sample) {
@@ -560,10 +626,12 @@ std::uint64_t Reflection::scoreLayout(const Layout& candidate, std::span<const s
 
 void Reflection::detectLayout() {
     std::vector<std::uint64_t> sample;
-    for (const std::uint64_t registrar : std::span(structQueue).first(std::min(structQueue.size(), sampleSize))) {
-        const std::uint64_t params = findParams(registrar);
+    for (const std::uint64_t registrar : registeredStructs) {
+        const std::uint64_t params = findParams(registrar, ParamsKind::Struct);
         if (params != 0)
             sample.push_back(params);
+        if (sample.size() == sampleSize)
+            break;
     }
     const std::span<const Layout* const> candidates = engine5 ? std::span<const Layout* const>(engine5Layouts) : std::span<const Layout* const>(engine4Layouts);
     std::uint64_t best = 0;
@@ -594,15 +662,15 @@ void Reflection::detectTypeNumbering() {
             if ((image.read<std::uint8_t>(image.read<std::uint64_t>(array + 8 * i) + layout->propertyType) & 0x1F) >= firstEngine423Kind)
                 numbering = TypeNumbering::Engine423;
     };
-    for (const std::uint64_t registrar : structQueue) {
-        const std::uint64_t params = findParams(registrar);
+    for (const std::uint64_t params : structQueue) {
         scan(image.read<std::uint64_t>(params + layout->structProperties), readPropertyCount(params + layout->structPropertyCount, layout->structPropertyCount16));
         if (numbering == TypeNumbering::Engine423)
             return;
     }
-    for (const ClassRecord& record : classRecords) {
-        const std::uint64_t params = findParams(record.construct);
-        scan(image.read<std::uint64_t>(params + layout->classProperties), image.read<std::uint32_t>(params + layout->classPropertyCount));
+    for (const ClassInfo& info : classes) {
+        if (info.params == 0)
+            continue;
+        scan(image.read<std::uint64_t>(info.params + layout->classProperties), readClassPropertyCount(info.params));
         if (numbering == TypeNumbering::Engine423)
             return;
     }
@@ -615,8 +683,7 @@ void Reflection::detectPropertyOrder() {
         return;
     }
     std::int64_t votes = 0;
-    for (const std::uint64_t registrar : std::span(structQueue).first(std::min(structQueue.size(), sampleSize))) {
-        const std::uint64_t params = findParams(registrar);
+    for (const std::uint64_t params : std::span(structQueue).first(std::min(structQueue.size(), sampleSize))) {
         const std::uint32_t count = readPropertyCount(params + layout->structPropertyCount, layout->structPropertyCount16);
         const std::span<const std::uint64_t> entries = readPointers(image.read<std::uint64_t>(params + layout->structProperties), count);
         for (std::size_t i = 0; i < entries.size(); i++) {
@@ -633,61 +700,31 @@ void Reflection::detectPropertyOrder() {
     backward = votes > 0;
 }
 
-std::optional<ClassBody> Reflection::findClassBody(const std::uint64_t getter, const int depth) {
-    const std::uint64_t function = code.followThunks(getter);
+//! StaticClass calls GetPrivateStaticClassBody(Package, Name, ...) with the unprefixed class name through at most two functions; the UE 4 FName constructor takes the name without the package.
+std::optional<Call> Reflection::findClassBody(const std::uint64_t function, const std::string_view name, const int depth) {
     std::vector<std::uint64_t> callees;
     for (const Call& call : code.findCalls(function)) {
-        if (call.target == classBody) {
-            const std::optional<std::uint64_t> name = call.getConstant(1);
-            if (!name || !image.isReadOnlyData(*name))
-                return std::nullopt;
-            return ClassBody{*name, call.getConstant(superArgument).value_or(0)};
-        }
+        const std::optional<std::uint64_t> package = call.getConstant(0);
+        const std::optional<std::uint64_t> argument = call.getConstant(1);
+        if (package && argument && image.startsWithUtf16(*package, scriptPrefix) && image.isReadOnlyData(*argument) &&
+            image.readUtf16(*argument) == name)
+            return call;
         if (image.isCode(call.target))
             callees.push_back(call.target);
     }
     if (depth == maxGetterDepth)
         return std::nullopt;
     for (const std::uint64_t callee : callees)
-        if (const std::optional<ClassBody> body = findClassBody(callee, depth + 1))
+        if (const std::optional<Call> body = findClassBody(code.followThunks(callee), name, depth + 1))
             return body;
     return std::nullopt;
 }
 
-//! GetPrivateStaticClassBody(Package, Name, ReturnClass, RegisterNatives, Size, ...); 4.25 adds the alignment before the super.
-void Reflection::detectClassBody() {
-    Votes votes;
-    const std::span<const ClassRecord> sample = std::span(classRecords).first(std::min(classRecords.size(), sampleSize));
-    for (const ClassRecord& record : sample) {
-        for (const Call& call : code.findCalls(code.followThunks(record.getter))) {
-            const std::optional<std::uint64_t> name = call.getConstant(1);
-            if (name && image.isReadOnlyData(*name) && call.getConstant(4))
-                votes[call.target]++;
-        }
-    }
-    if (votes.empty()) {
-        image.fail("No StaticClass function calls GetPrivateStaticClassBody.");
-        return;
-    }
-    classBody = findMostVoted(votes);
-    if (engine5 || layout != &layout418) {
-        std::unordered_set<std::uint64_t> getters;
-        for (const ClassRecord& record : classRecords)
-            getters.insert(code.followThunks(record.getter));
-        std::size_t known = 0;
-        for (const ClassRecord& record : sample) {
-            for (const Call& call : code.findCalls(code.followThunks(record.getter))) {
-                if (call.target != classBody)
-                    continue;
-                if (getters.contains(code.followThunks(call.getConstant(engine4SuperArgument).value_or(0))))
-                    known++;
-                break;
-            }
-        }
-        superArgument = known * 2 > sample.size() ? engine4SuperArgument : engine425SuperArgument;
-        return;
-    }
-    superArgument = engine4SuperArgument;
+std::string_view bodyNameOf(std::string_view registeredName) {
+    registeredName.remove_prefix(1);
+    if (registeredName.starts_with("DEPRECATED_"))
+        registeredName.remove_prefix(std::string_view("DEPRECATED_").size());
+    return registeredName;
 }
 
 std::optional<Kind> Reflection::readKind(const std::uint64_t property) {
@@ -789,101 +826,154 @@ void Reflection::readProperties(const std::uint64_t array, const std::uint32_t c
 std::uint32_t Reflection::queueStruct(const std::uint64_t params) {
     if (const auto found = structNames.find(params); found != structNames.end())
         return found->second;
-    const std::uint64_t name = image.read<std::uint64_t>(params + structName);
-    if (!isName(name)) {
-        image.fail(std::format("The struct parameters at {:#x} have no name.", params));
-        return 0;
-    }
-    const std::uint32_t index = schema.names.add(image.readUtf8(name));
+    const std::uint32_t index = schema.names.add(image.readUtf8(image.read<std::uint64_t>(params + structName)));
     structNames.emplace(params, index);
     structQueue.push_back(params);
     return index;
 }
 
-std::uint32_t Reflection::queueEnum(const std::uint64_t params, const std::uint32_t package) {
+std::uint32_t Reflection::queueEnum(const std::uint64_t params) {
     if (const auto found = enumNames.find(params); found != enumNames.end())
         return found->second;
-    const std::uint64_t name = image.read<std::uint64_t>(params + enumName);
-    if (!isName(name)) {
-        image.fail(std::format("The enum parameters at {:#x} have no name.", params));
-        return 0;
-    }
-    const std::uint32_t index = schema.names.add(image.readUtf8(name));
+    const std::uint32_t index = schema.names.add(image.readUtf8(image.read<std::uint64_t>(params + enumName)));
     enumNames.emplace(params, index);
-    enumQueue.push_back({params, package});
+    enumQueue.push_back({params, packageOf(params)});
     return index;
 }
 
 std::uint32_t Reflection::resolveStruct(const std::uint64_t function) {
-    const std::uint64_t params = findParams(function);
+    const std::uint64_t params = findParams(function, ParamsKind::Struct);
     if (params == 0) {
-        image.fail(std::format("The struct function at {:#x} in {} has no parameter table.", function, currentOwner));
+        image.fail(std::format("The struct function at {:#x} in {} references no struct parameters.", function, currentOwner));
         return 0;
     }
     return queueStruct(params);
 }
 
 std::uint32_t Reflection::resolveEnum(const std::uint64_t function) {
-    const std::uint64_t params = findParams(function);
+    const std::uint64_t params = findParams(function, ParamsKind::Enum);
     if (params == 0) {
-        image.fail(std::format("The enum function at {:#x} in {} has no parameter table.", function, currentOwner));
+        image.fail(std::format("The enum function at {:#x} in {} references no enum parameters.", function, currentOwner));
         return 0;
     }
-    return queueEnum(params, unknownPackage);
+    return queueEnum(params);
 }
 
-std::uint32_t Reflection::resolveClass(const std::uint64_t getter) {
-    const std::uint64_t function = code.followThunks(getter);
-    if (const auto found = classNames.find(function); found != classNames.end())
-        return found->second;
-    const std::optional<ClassBody> body = findClassBody(function, 0);
-    if (!body) {
-        image.fail(std::format("The class getter at {:#x} does not call GetPrivateStaticClassBody.", getter));
-        return noName;
-    }
-    const std::uint32_t name = schema.names.add(image.readUtf16(body->name));
-    classNames.emplace(function, name);
-    Struct entry{.name = name};
-    const std::uint32_t super = body->superGetter == 0 ? noName : resolveClass(body->superGetter);
-    entry.super = super == name ? noName : super;
-    schema.structs.push_back(entry);
-    return name;
+std::optional<std::size_t> Reflection::findClass(const std::uint64_t function) {
+    const auto found = classOfFunction.find(code.followThunks(function));
+    if (found == classOfFunction.end())
+        return std::nullopt;
+    return found->second;
 }
 
-//! The name that StaticClass passes to GetPrivateStaticClassBody lacks the DEPRECATED_ part of a deprecated class.
-void Reflection::readClasses() {
-    std::vector<std::uint64_t> superGetters;
-    std::vector<const ClassRecord*> records;
+//! A class is known by its Z_Construct function and by its StaticClass function; the same class can register twice.
+void Reflection::collectClasses() {
     for (const ClassRecord& record : classRecords) {
-        const std::string registeredName = image.readUtf16(record.name);
-        const auto [found, inserted] = classNames.emplace(code.followThunks(record.getter), schema.names.add(std::string_view(registeredName).substr(1)));
-        if (!inserted)
+        const std::uint64_t construct = code.followThunks(record.construct);
+        if (classOfFunction.contains(construct))
             continue;
-        const std::optional<ClassBody> body = findClassBody(record.getter, 0);
-        if (!body) {
-            image.fail(std::format("The StaticClass function of {} does not call GetPrivateStaticClassBody.", registeredName));
-            return;
-        }
-        superGetters.push_back(body->superGetter);
-        records.push_back(&record);
+        std::string registeredName = image.readUtf16(record.name);
+        const std::uint32_t name = schema.names.add(std::string_view(registeredName).substr(1));
+        const std::uint64_t params = findParams(construct, ParamsKind::Class);
+        classOfFunction.emplace(construct, classes.size());
+        classOfFunction.emplace(code.followThunks(record.getter), classes.size());
+        classes.push_back({name, params, construct, record.getter, std::move(registeredName)});
     }
-    for (std::size_t i = 0; i < records.size() && !image.getError(); i++) {
-        const ClassRecord& record = *records[i];
-        const std::uint32_t name = classNames.at(code.followThunks(record.getter));
-        Struct entry{.name = name};
-        const std::uint32_t super = superGetters[i] == 0 ? noName : resolveClass(superGetters[i]);
-        entry.super = super == name ? noName : super;
-        const std::uint64_t params = findParams(record.construct);
-        if (params == 0 && !record.intrinsic) {
-            image.fail(std::format("The class {} has no parameter table.", schema.names.getNames()[name]));
-            return;
+}
+
+//! GetPrivateStaticClassBody takes the super class function as argument 11 until 4.24 and 12 from 4.25; the first dependency of a class with parameters is its super.
+std::optional<ClassBodySignature> Reflection::findClassBodySignature() {
+    std::vector<std::pair<Call, std::size_t>> bodies;
+    Votes votes;
+    for (std::size_t index = 0; index < classes.size() && bodies.size() < sampleSize; index++) {
+        const ClassInfo& info = classes[index];
+        if (info.params == 0)
+            continue;
+        const std::optional<std::size_t> super = findClass(image.read<std::uint64_t>(image.read<std::uint64_t>(info.params + layout->classDependencies)));
+        if (!super)
+            continue;
+        const std::optional<Call> body = findClassBody(code.followThunks(info.getter), bodyNameOf(info.registeredName), 0);
+        if (!body)
+            continue;
+        bodies.emplace_back(*body, *super);
+        votes[body->target]++;
+    }
+    if (votes.empty())
+        return std::nullopt;
+    const std::uint64_t function = findMostVoted(votes);
+    std::optional<std::size_t> argument;
+    for (const auto& [body, super] : bodies) {
+        if (body.target != function)
+            continue;
+        const bool early = findClass(body.getConstant(engine4SuperArgument).value_or(0)) == super;
+        const bool late = findClass(body.getConstant(engine425SuperArgument).value_or(0)) == super;
+        //! A class whose super is also its within class, UObject, shows nothing.
+        if (early == late)
+            continue;
+        const std::size_t candidate = early ? engine4SuperArgument : engine425SuperArgument;
+        if (argument && *argument != candidate) {
+            image.fail("The classes disagree on the position of the super class in GetPrivateStaticClassBody.");
+            return std::nullopt;
         }
-        //! An intrinsic class, such as UClass or UPackage, has no parameter table and no reflected properties.
-        if (params != 0) {
-            const std::uint32_t count = layout->classPropertyCountPacked ? image.read<std::uint32_t>(params + layout->classPropertyCount) >> 15 & 0x7FF
-                                                                         : image.read<std::uint32_t>(params + layout->classPropertyCount);
-            readProperties(image.read<std::uint64_t>(params + layout->classProperties), count, schema.names.getNames()[name], entry);
+        argument = candidate;
+    }
+    if (!argument)
+        return std::nullopt;
+    return ClassBodySignature{function, *argument};
+}
+
+//! UE 4 inlines GetPrivateStaticClassBody in CoreUObject, where NotifyRegistrationEvent takes its package and name and Z_Construct constructs the super class.
+std::optional<std::size_t> Reflection::findIntrinsicSuper(const std::size_t index, std::optional<ClassBodySignature>& signature) {
+    const ClassInfo& info = classes[index];
+    const std::optional<Call> body = findClassBody(code.followThunks(info.getter), bodyNameOf(info.registeredName), 0);
+    if (body && !signature)
+        signature = findClassBodySignature();
+    if (body && !signature) {
+        image.fail("No class shows GetPrivateStaticClassBody and the position of its super class.");
+        return std::nullopt;
+    }
+    if (body && body->target == signature->function) {
+        const std::uint64_t superGetter = body->getConstant(signature->superArgument).value_or(0);
+        const std::optional<std::size_t> super = findClass(superGetter);
+        if (!super)
+            image.fail(std::format("The super class function {:#x} of {} belongs to no registered class.", superGetter, info.registeredName));
+        return super;
+    }
+    std::vector<std::size_t> supers;
+    for (const std::uint64_t callee : code.findReferences(code.followThunks(info.construct)).code) {
+        const std::optional<std::size_t> candidate = findClass(callee);
+        if (candidate && *candidate != index && !std::ranges::contains(supers, *candidate))
+            supers.push_back(*candidate);
+    }
+    if (supers.size() != 1) {
+        image.fail(std::format("The inlined intrinsic class {} links to {} super classes.", info.registeredName, supers.size()));
+        return std::nullopt;
+    }
+    return supers[0];
+}
+
+//! FClassParams lists the super class first among the dependencies; an intrinsic class, such as UClass, has no parameters and names its super in StaticClass.
+void Reflection::readClasses() {
+    std::optional<ClassBodySignature> signature;
+    for (std::size_t index = 0; index < classes.size() && !image.getError(); index++) {
+        const ClassInfo& info = classes[index];
+        Struct entry{.name = info.name};
+        std::optional<std::size_t> super;
+        if (info.params != 0) {
+            const std::uint64_t first = image.read<std::uint64_t>(image.read<std::uint64_t>(info.params + layout->classDependencies));
+            super = findClass(first);
+            if (!super && findParams(code.followThunks(first), ParamsKind::Package) == 0) {
+                image.fail(std::format("The first dependency of {} at {:#x} is no registered class and no package.", info.registeredName, first));
+                return;
+            }
+            readProperties(image.read<std::uint64_t>(info.params + layout->classProperties), readClassPropertyCount(info.params), info.registeredName, entry);
+        } else {
+            super = findIntrinsicSuper(index, signature);
+            if (image.getError())
+                return;
         }
+        if (super && *super != index)
+            entry.super = classes[*super].name;
         schema.structs.push_back(entry);
     }
 }
@@ -929,7 +1019,7 @@ void Reflection::readEnum(const TypeRecord& record) {
         const std::string lower = toLower(item);
         return std::ranges::any_of(enumerators, [&](const EnumName& entry) { return toLower(entry.full) == lower; });
     };
-    const std::string scope = engine5 && record.package != unknownPackage ? packages[record.package] + '\n' : std::string();
+    const std::string scope = engine5 ? packages[record.package] + '\n' : std::string();
     const std::string maxName = full(enumPrefixOf(enumerators, enumName) + "_MAX");
     if (!contains(full("MAX")) && !contains(maxName) && !usedEnumNames.contains(toLower(scope + maxName))) {
         std::int64_t maxValue = 0;
@@ -951,40 +1041,35 @@ std::expected<Schema, Error> Reflection::read() {
         return std::unexpected(*image.getError());
     engine5 = collectBatches(initializers);
     collectSingles(initializers);
+    for (const auto [registrar, name] : singleTypes)
+        if (findParams(registrar, ParamsKind::Struct) != 0)
+            registeredStructs.push_back(registrar);
     if (image.getError())
         return std::unexpected(*image.getError());
+    detectLayout();
+    if (image.getError())
+        return std::unexpected(*image.getError());
+    classifySingles();
     if (classRecords.empty())
         return std::unexpected(Error{"The executable registers no reflected classes."});
-    detectLayout();
+    collectClasses();
+    for (const std::uint64_t registrar : registeredStructs) {
+        const std::uint64_t params = findParams(registrar, ParamsKind::Struct);
+        if (params == 0 && !image.getError())
+            return std::unexpected(Error{std::format("The struct function at {:#x} references no struct parameters.", registrar)});
+        queueStruct(params);
+    }
+    for (const std::uint64_t registrar : registeredEnums) {
+        const std::uint64_t params = findParams(registrar, ParamsKind::Enum);
+        if (params == 0 && !image.getError())
+            return std::unexpected(Error{std::format("The enum function at {:#x} references no enum parameters.", registrar)});
+        queueEnum(params);
+    }
     if (image.getError())
         return std::unexpected(*image.getError());
     detectTypeNumbering();
     detectPropertyOrder();
-    detectClassBody();
-    if (image.getError())
-        return std::unexpected(*image.getError());
-
-    Votes enumConstructors;
-    const std::vector<TypeRecord> registeredEnums = std::exchange(enumQueue, {});
-    for (const TypeRecord& record : registeredEnums) {
-        const Construction construction = findConstruction(record.params);
-        if (construction.params == 0)
-            return std::unexpected(Error{std::format("The enum function at {:#x} has no parameter table.", record.params)});
-        enumConstructors[construction.target]++;
-        queueEnum(construction.params, record.package);
-    }
-    Votes structConstructors;
-    const std::vector<std::uint64_t> registeredStructs = std::exchange(structQueue, {});
-    for (const std::uint64_t registrar : registeredStructs) {
-        const Construction construction = findConstruction(registrar);
-        if (construction.params == 0)
-            return std::unexpected(Error{std::format("The struct function at {:#x} has no parameter table.", registrar)});
-        structConstructors[construction.target]++;
-        queueStruct(construction.params);
-    }
-    if (structConstructors.empty() || enumConstructors.empty())
-        return std::unexpected(Error{"The executable registers no reflected structs or no reflected enums."});
-    collectPackageTypes(findMostVoted(structConstructors), findMostVoted(enumConstructors));
+    collectPackageTypes();
     if (image.getError())
         return std::unexpected(*image.getError());
     readClasses();

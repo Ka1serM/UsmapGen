@@ -7,9 +7,9 @@ namespace UsmapGen {
 
 namespace {
 
-constexpr std::uint64_t leafFunctionLimit = 0x1000;
-constexpr std::uint64_t functionLimit = 0x100000;
+constexpr std::size_t maxInstructions = 0x40000;
 constexpr int maxThunks = 4;
+constexpr int maxThunkSetup = 2;
 constexpr std::int64_t stackBelow = 0x4000;
 constexpr std::int64_t stackAbove = 0x200;
 constexpr std::size_t stackSlots = (stackBelow + stackAbove) / 8;
@@ -205,6 +205,14 @@ void clobber(Machine& machine, std::span<const ZydisDecodedOperand> operands) {
     }
 }
 
+bool setsConstant(const ZydisDecodedInstruction& instruction, const ZydisDecodedOperand* operands) {
+    if (instruction.operand_count_visible != 2 || operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER)
+        return false;
+    if (instruction.mnemonic == ZYDIS_MNEMONIC_MOV)
+        return operands[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE;
+    return instruction.mnemonic == ZYDIS_MNEMONIC_XOR && operands[1].type == ZYDIS_OPERAND_TYPE_REGISTER && operands[1].reg.value == operands[0].reg.value;
+}
+
 }
 
 std::optional<std::uint64_t> Call::getConstant(const std::size_t index) const {
@@ -218,127 +226,201 @@ Code::Code(Image& image) : image(image) {
     ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
 }
 
-std::uint64_t Code::followThunks(std::uint64_t function) {
-    for (int i = 0; i < maxThunks && image.isCode(function); i++) {
-        std::byte jump[5];
-        image.read(function, jump);
-        if (jump[0] != std::byte{0xE9})
-            return function;
-        std::int32_t displacement;
-        std::memcpy(&displacement, jump + 1, 4);
-        function += 5 + std::int64_t(displacement);
+bool Code::decode(const std::uint64_t address) {
+    const std::uint64_t codeEnd = image.getCode().address + image.getCode().virtualSize;
+    if (!image.isCode(address))
+        return false;
+    std::byte bytes[ZYDIS_MAX_INSTRUCTION_LENGTH];
+    const std::size_t length = std::size_t(std::min<std::uint64_t>(sizeof(bytes), codeEnd - address));
+    image.read(address, std::span(bytes, length));
+    return ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, bytes, length, &instruction, operands));
+}
+
+std::optional<std::uint64_t> Code::branchTarget(const std::uint64_t address) const {
+    ZyanU64 target = 0;
+    if (instruction.operand_count_visible == 0 || operands[0].type != ZYDIS_OPERAND_TYPE_IMMEDIATE ||
+        !ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&instruction, &operands[0], address, &target)) || !image.isCode(target))
+        return std::nullopt;
+    return target;
+}
+
+//! Follows the control flow from the entry, so a function split into fragments or with code after a return is read whole.
+void Code::traverse(const std::uint64_t function) {
+    covered.clear();
+    pending.assign(1, function);
+    std::size_t budget = maxInstructions;
+    while (!pending.empty() && budget > 0) {
+        std::uint64_t address = pending.back();
+        pending.pop_back();
+        const auto next = covered.upper_bound(address);
+        if (next != covered.begin() && std::prev(next)->second > address)
+            continue;
+        const std::uint64_t limit = next == covered.end() ? ~0ull : next->first;
+        const std::uint64_t begin = address;
+        while (address < limit && budget > 0 && decode(address)) {
+            budget--;
+            const std::uint64_t at = address;
+            address += instruction.length;
+            if (instruction.mnemonic == ZYDIS_MNEMONIC_RET || instruction.mnemonic == ZYDIS_MNEMONIC_INT3 || instruction.mnemonic == ZYDIS_MNEMONIC_UD2)
+                break;
+            const std::optional<std::uint64_t> target = branchTarget(at);
+            if (instruction.mnemonic == ZYDIS_MNEMONIC_JMP) {
+                if (target && (*target == function || !image.isFunctionStart(*target)))
+                    pending.push_back(*target);
+                break;
+            }
+            if (instruction.meta.category == ZYDIS_CATEGORY_COND_BR && target)
+                pending.push_back(*target);
+        }
+        if (address > begin)
+            covered.emplace(begin, address);
     }
-    return function;
 }
 
 std::span<const Call> Code::findCalls(const std::uint64_t function) {
     calls.clear();
-    if (!image.isCode(function))
-        return calls;
-    const std::uint64_t codeEnd = image.getCode().address + image.getCode().virtualSize;
-    const std::uint64_t end = std::min(codeEnd, image.getFunctionEnd(function).value_or(function + leafFunctionLimit));
-    if (end <= function || end - function > functionLimit)
-        return calls;
-    bytes.resize(end - function);
-    image.read(function, bytes);
-
+    traverse(function);
     Machine machine;
-    ZydisDecodedInstruction instruction;
-    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
-    for (std::size_t at = 0; at < bytes.size(); at += instruction.length) {
-        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, bytes.data() + at, bytes.size() - at, &instruction, operands)))
-            return calls;
-        const std::uint64_t address = function + at;
-        const std::span<const ZydisDecodedOperand> visible(operands, instruction.operand_count_visible);
-        switch (instruction.mnemonic) {
-        case ZYDIS_MNEMONIC_RET:
-        case ZYDIS_MNEMONIC_INT3:
-            return calls;
-        case ZYDIS_MNEMONIC_CALL:
-        case ZYDIS_MNEMONIC_JMP: {
-            ZyanU64 target = 0;
-            const bool direct = visible[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE &&
-                                ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&instruction, &visible[0], address, &target));
-            if (direct)
-                calls.push_back(machine.makeCall(target));
-            if (instruction.mnemonic == ZYDIS_MNEMONIC_CALL)
-                machine.clearVolatile();
-            continue;
+    std::uint64_t previousEnd = 0;
+    for (const auto [begin, end] : covered) {
+        if (begin != previousEnd)
+            machine = Machine();
+        previousEnd = end;
+        for (std::uint64_t address = begin; address < end && decode(address); address += instruction.length) {
+            const std::span<const ZydisDecodedOperand> visible(operands, instruction.operand_count_visible);
+            switch (instruction.mnemonic) {
+            case ZYDIS_MNEMONIC_CALL:
+            case ZYDIS_MNEMONIC_JMP: {
+                const std::optional<std::uint64_t> target = branchTarget(address);
+                const bool call = instruction.mnemonic == ZYDIS_MNEMONIC_CALL;
+                if (target && (call || image.isFunctionStart(*target)))
+                    calls.push_back(machine.makeCall(*target));
+                if (call)
+                    machine.clearVolatile();
+                continue;
+            }
+            case ZYDIS_MNEMONIC_PUSH:
+                machine.moveStack(-8);
+                continue;
+            case ZYDIS_MNEMONIC_POP:
+                machine.moveStack(8);
+                clobber(machine, visible);
+                continue;
+            case ZYDIS_MNEMONIC_SUB:
+            case ZYDIS_MNEMONIC_ADD: {
+                const bool stack = visible[0].type == ZYDIS_OPERAND_TYPE_REGISTER && indexOf(visible[0].reg.value) == rsp &&
+                                   visible[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE;
+                if (!stack)
+                    break;
+                const std::int64_t delta = visible[1].imm.value.s;
+                machine.moveStack(instruction.mnemonic == ZYDIS_MNEMONIC_SUB ? -delta : delta);
+                continue;
+            }
+            case ZYDIS_MNEMONIC_LEA:
+                writeRegister(machine, visible[0], addressOf(machine, instruction, visible[1], address));
+                continue;
+            case ZYDIS_MNEMONIC_MOV: {
+                const Value value = sourceOf(machine, visible[1]);
+                if (visible[0].type == ZYDIS_OPERAND_TYPE_REGISTER)
+                    writeRegister(machine, visible[0], value);
+                else
+                    writeMemory(machine, visible[0], value);
+                continue;
+            }
+            case ZYDIS_MNEMONIC_XOR:
+                if (visible[0].type != ZYDIS_OPERAND_TYPE_REGISTER || visible[1].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+                    visible[0].reg.value != visible[1].reg.value)
+                    break;
+                writeRegister(machine, visible[0], constant(0));
+                continue;
+            case ZYDIS_MNEMONIC_XORPS:
+            case ZYDIS_MNEMONIC_PXOR:
+            case ZYDIS_MNEMONIC_VXORPS:
+            case ZYDIS_MNEMONIC_VPXOR:
+                if (!isVectorZeroing(visible))
+                    break;
+                machine.setZeroVector(vectorIndexOf(visible[0].reg.value), true);
+                continue;
+            case ZYDIS_MNEMONIC_MOVUPS:
+            case ZYDIS_MNEMONIC_MOVAPS:
+            case ZYDIS_MNEMONIC_MOVDQU:
+            case ZYDIS_MNEMONIC_MOVDQA:
+            case ZYDIS_MNEMONIC_VMOVUPS:
+            case ZYDIS_MNEMONIC_VMOVAPS:
+            case ZYDIS_MNEMONIC_VMOVDQU:
+            case ZYDIS_MNEMONIC_VMOVDQA: {
+                //! Compilers clear several stack arguments at once with a store of a zeroed vector register.
+                if (visible[0].type != ZYDIS_OPERAND_TYPE_MEMORY || visible[1].type != ZYDIS_OPERAND_TYPE_REGISTER)
+                    break;
+                const std::optional<std::int64_t> offset = machine.stackOffsetOf(visible[0].mem);
+                if (!offset)
+                    break;
+                const bool zero = machine.isZeroVector(vectorIndexOf(visible[1].reg.value));
+                for (std::uint32_t part = 0; part < visible[0].size / 64; part++)
+                    machine.store(*offset + 8 * part, 8, zero ? constant(0) : unknown);
+                continue;
+            }
+            case ZYDIS_MNEMONIC_AND:
+                //! MSVC clears a stack argument with `and qword ptr [rsp+N], 0`.
+                if (visible[0].type != ZYDIS_OPERAND_TYPE_MEMORY || visible[1].type != ZYDIS_OPERAND_TYPE_IMMEDIATE ||
+                    visible[1].imm.value.u != 0)
+                    break;
+                writeMemory(machine, visible[0], constant(0));
+                continue;
+            default:
+                break;
+            }
+            clobber(machine, std::span<const ZydisDecodedOperand>(operands, instruction.operand_count));
         }
-        case ZYDIS_MNEMONIC_PUSH:
-            machine.moveStack(-8);
-            continue;
-        case ZYDIS_MNEMONIC_POP:
-            machine.moveStack(8);
-            clobber(machine, visible);
-            continue;
-        case ZYDIS_MNEMONIC_SUB:
-        case ZYDIS_MNEMONIC_ADD: {
-            const bool stack = visible[0].type == ZYDIS_OPERAND_TYPE_REGISTER && indexOf(visible[0].reg.value) == rsp &&
-                               visible[1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE;
-            if (!stack)
-                break;
-            const std::int64_t delta = visible[1].imm.value.s;
-            machine.moveStack(instruction.mnemonic == ZYDIS_MNEMONIC_SUB ? -delta : delta);
-            continue;
-        }
-        case ZYDIS_MNEMONIC_LEA:
-            writeRegister(machine, visible[0], addressOf(machine, instruction, visible[1], address));
-            continue;
-        case ZYDIS_MNEMONIC_MOV: {
-            const Value value = sourceOf(machine, visible[1]);
-            if (visible[0].type == ZYDIS_OPERAND_TYPE_REGISTER)
-                writeRegister(machine, visible[0], value);
-            else
-                writeMemory(machine, visible[0], value);
-            continue;
-        }
-        case ZYDIS_MNEMONIC_XOR:
-            if (visible[0].type != ZYDIS_OPERAND_TYPE_REGISTER || visible[1].type != ZYDIS_OPERAND_TYPE_REGISTER ||
-                visible[0].reg.value != visible[1].reg.value)
-                break;
-            writeRegister(machine, visible[0], constant(0));
-            continue;
-        case ZYDIS_MNEMONIC_XORPS:
-        case ZYDIS_MNEMONIC_PXOR:
-        case ZYDIS_MNEMONIC_VXORPS:
-        case ZYDIS_MNEMONIC_VPXOR:
-            if (!isVectorZeroing(visible))
-                break;
-            machine.setZeroVector(vectorIndexOf(visible[0].reg.value), true);
-            continue;
-        case ZYDIS_MNEMONIC_MOVUPS:
-        case ZYDIS_MNEMONIC_MOVAPS:
-        case ZYDIS_MNEMONIC_MOVDQU:
-        case ZYDIS_MNEMONIC_MOVDQA:
-        case ZYDIS_MNEMONIC_VMOVUPS:
-        case ZYDIS_MNEMONIC_VMOVAPS:
-        case ZYDIS_MNEMONIC_VMOVDQU:
-        case ZYDIS_MNEMONIC_VMOVDQA: {
-            //! Compilers clear several stack arguments at once with a store of a zeroed vector register.
-            if (visible[0].type != ZYDIS_OPERAND_TYPE_MEMORY || visible[1].type != ZYDIS_OPERAND_TYPE_REGISTER)
-                break;
-            const std::optional<std::int64_t> offset = machine.stackOffsetOf(visible[0].mem);
-            if (!offset)
-                break;
-            const bool zero = machine.isZeroVector(vectorIndexOf(visible[1].reg.value));
-            for (std::uint32_t part = 0; part < visible[0].size / 64; part++)
-                machine.store(*offset + 8 * part, 8, zero ? constant(0) : unknown);
-            continue;
-        }
-        case ZYDIS_MNEMONIC_AND:
-            //! MSVC clears a stack argument with `and qword ptr [rsp+N], 0`.
-            if (visible[0].type != ZYDIS_OPERAND_TYPE_MEMORY || visible[1].type != ZYDIS_OPERAND_TYPE_IMMEDIATE ||
-                visible[1].imm.value.u != 0)
-                break;
-            writeMemory(machine, visible[0], constant(0));
-            continue;
-        default:
-            break;
-        }
-        clobber(machine, std::span<const ZydisDecodedOperand>(operands, instruction.operand_count));
     }
     return calls;
+}
+
+const References& Code::findReferences(const std::uint64_t function) {
+    if (const auto found = references.find(function); found != references.end())
+        return found->second;
+    References result;
+    traverse(function);
+    for (const auto [begin, end] : covered) {
+        for (std::uint64_t address = begin; address < end && decode(address); address += instruction.length) {
+            const bool call = instruction.mnemonic == ZYDIS_MNEMONIC_CALL;
+            if (call || instruction.mnemonic == ZYDIS_MNEMONIC_JMP) {
+                const std::optional<std::uint64_t> target = branchTarget(address);
+                if (target && (call || image.isFunctionStart(*target)))
+                    result.code.push_back(*target);
+                continue;
+            }
+            for (const ZydisDecodedOperand& operand : std::span(operands, instruction.operand_count_visible)) {
+                if (operand.type != ZYDIS_OPERAND_TYPE_MEMORY || operand.mem.base != ZYDIS_REGISTER_RIP)
+                    continue;
+                const std::uint64_t target = address + instruction.length + std::uint64_t(operand.mem.disp.value);
+                if (image.isData(target))
+                    result.data.push_back(target);
+                else if (instruction.mnemonic == ZYDIS_MNEMONIC_LEA && image.isCode(target))
+                    result.code.push_back(target);
+            }
+        }
+    }
+    return references.emplace(function, std::move(result)).first->second;
+}
+
+//! A thunk only sets registers to constants, as UE 5.8 StaticClass does with `xor ecx, ecx`, before it jumps on.
+std::uint64_t Code::followThunks(std::uint64_t function) {
+    for (int thunk = 0; thunk < maxThunks; thunk++) {
+        std::uint64_t address = function;
+        int setup = 0;
+        while (decode(address) && instruction.mnemonic != ZYDIS_MNEMONIC_JMP && setup < maxThunkSetup && setsConstant(instruction, operands)) {
+            address += instruction.length;
+            setup++;
+        }
+        if (instruction.mnemonic != ZYDIS_MNEMONIC_JMP)
+            return function;
+        const std::optional<std::uint64_t> target = branchTarget(address);
+        if (!target)
+            return function;
+        function = *target;
+    }
+    return function;
 }
 
 }

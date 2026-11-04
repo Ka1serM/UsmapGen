@@ -49,7 +49,7 @@ public:
     std::string readUtf16(std::uint64_t address);
     bool startsWithUtf16(std::uint64_t address, std::u16string_view prefix);
 
-    std::optional<std::uint64_t> getFunctionEnd(std::uint64_t function);
+    bool isFunctionStart(std::uint64_t address);
     std::vector<std::uint64_t> readPointerSlots(const Section& section);
 
     const std::optional<Error>& getError() const { return error; }
