@@ -1126,13 +1126,17 @@ void Reflection::readEnum(const TypeRecord& record) {
     const std::string scope = engine5 ? packages[record.package] + '\n' : std::string();
     const std::string maxName = full(enumPrefixOf(enumerators, enumName) + "_MAX");
     if (!contains(full("MAX")) && !contains(maxName) && !usedEnumNames.contains(toLower(scope + maxName))) {
-        std::int64_t maxValue = 0;
-        if (!enumerators.empty())
-            maxValue = std::ranges::max(enumerators | std::views::transform([](const EnumName& entry) { return std::int64_t(entry.value); }));
-        //! From UE 5.5 the parameters mark a UENUM(Flags) enum, and its MAX is the next power of two.
+        //! From UE 5.5 the parameters mark a UENUM(Flags) enum, whose largest value is the union of its single-bit enumerators.
         const bool flags = layout->enumFlags != 0 && (image.read<std::uint8_t>(record.params + layout->enumFlags) & flagsEnum) != 0;
-        const std::uint64_t next = std::uint64_t(maxValue) + 1;
-        enumerators.push_back({maxName, flags && maxValue >= 0 ? std::bit_ceil(next) : next});
+        std::int64_t maxValue = 0;
+        if (flags) {
+            for (const EnumName& entry : enumerators)
+                if (std::has_single_bit(entry.value))
+                    maxValue |= std::int64_t(entry.value);
+        } else if (!enumerators.empty()) {
+            maxValue = std::ranges::max(enumerators | std::views::transform([](const EnumName& entry) { return std::int64_t(entry.value); }));
+        }
+        enumerators.push_back({maxName, std::uint64_t(maxValue + 1)});
     }
     Enum entry{.name = name, .firstValue = std::uint32_t(schema.enumValues.size()), .valueCount = std::uint16_t(enumerators.size())};
     for (const EnumName& enumerator : enumerators) {
