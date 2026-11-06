@@ -16,6 +16,7 @@ namespace {
 
 constexpr std::uint64_t maxPointerGap = 32;
 constexpr std::size_t initializerCandidates = 8;
+constexpr std::size_t scannedSlots = 8192;
 constexpr std::uint64_t maxRegistrations = 4096;
 constexpr std::uint32_t maxSingletons = 0xFFFF;
 constexpr std::size_t sampleSize = 256;
@@ -209,6 +210,7 @@ public:
 private:
     std::vector<std::uint64_t> findInitializers();
     std::vector<std::uint64_t> findInitializersInReadOnlyData();
+    std::vector<std::uint64_t> findInitializersWithoutRelocations();
     void runInitializers(std::span<const std::uint64_t> initializers);
     void applyStores(std::uint64_t function);
     bool collectBatches(std::span<const std::uint64_t> initializers);
@@ -288,7 +290,7 @@ private:
 //! The CRT startup code, which the entry point calls or jumps to, runs each table of initializers with _initterm(First, Last) or _initterm_e(First, Last).
 std::vector<std::uint64_t> Reflection::findInitializers() {
     if (!image.isCode(image.getEntryPoint()))
-        return findInitializersInReadOnlyData();
+        return image.hasRelocations() ? findInitializersInReadOnlyData() : findInitializersWithoutRelocations();
     std::vector<std::uint64_t> initializers;
     std::vector<std::uint64_t> table;
     for (const Call& startup : code.findCalls(image.getEntryPoint())) {
@@ -338,6 +340,47 @@ std::vector<std::uint64_t> Reflection::findInitializersInReadOnlyData() {
     }
     image.fail("The executable has no table of C++ dynamic initializers.");
     return {};
+}
+
+//! A memory dump of a protected executable can lack the base relocations; .CRT$XCU then is the longest run of code pointers in .rdata, with zeros between CRT sections.
+std::vector<std::uint64_t> Reflection::findInitializersWithoutRelocations() {
+    struct Run {
+        std::uint64_t first = 0;
+        std::uint64_t last = 0;
+        std::size_t count = 0;
+    };
+    const Section& section = image.getReadOnlyData();
+    const std::uint64_t end = section.address + section.virtualSize;
+    Run run;
+    Run longest;
+    std::vector<std::uint64_t> slots(scannedSlots);
+    for (std::uint64_t address = section.address; address + 8 <= end; address += slots.size() * 8) {
+        const std::span<std::uint64_t> values = std::span(slots).first(static_cast<std::size_t>(std::min<std::uint64_t>(slots.size(), (end - address) / 8)));
+        image.read(address, std::as_writable_bytes(values));
+        for (std::size_t i = 0; i < values.size(); i++) {
+            const std::uint64_t slot = address + 8 * i;
+            if (image.isCode(values[i])) {
+                if (run.count == 0)
+                    run.first = slot;
+                run.last = slot;
+                run.count++;
+            } else if (values[i] != 0 || slot - run.last >= maxPointerGap) {
+                if (run.count > longest.count)
+                    longest = run;
+                run = {};
+            }
+        }
+    }
+    if (run.count > longest.count)
+        longest = run;
+    if (longest.count == 0) {
+        image.fail("The executable has no table of C++ dynamic initializers.");
+        return {};
+    }
+    std::vector<std::uint64_t> table((longest.last - longest.first) / 8 + 1);
+    image.read(longest.first, std::as_writable_bytes(std::span(table)));
+    std::erase(table, 0);
+    return table;
 }
 
 bool isIdentifierChar(const char16_t c) {
