@@ -15,6 +15,9 @@ constexpr std::uint32_t noSlot = 0;
 constexpr std::uint32_t peSignature = 0x4550;
 constexpr std::uint16_t machineAmd64 = 0x8664;
 constexpr std::uint16_t optionalHeaderPe32Plus = 0x20B;
+constexpr std::uint32_t sectionInitializedData = 0x40;
+constexpr std::uint32_t sectionExecute = 0x20000000;
+constexpr std::uint32_t sectionWrite = 0x80000000;
 constexpr std::uint32_t exceptionDirectory = 3;
 constexpr std::uint32_t relocationDirectory = 5;
 constexpr std::uint16_t relocationDir64 = 10;
@@ -92,6 +95,9 @@ std::expected<void, Error> Image::open() {
     readFile(pe + 24 + optionalSize, table);
     if (error)
         return std::unexpected(*error);
+    Section firstExecutable;
+    Section firstReadOnly;
+    Section firstWritable;
     for (std::uint16_t i = 0; i < sectionCount; i++) {
         const std::byte* entry = table.data() + 40 * i;
         const std::string_view name(reinterpret_cast<const char*>(entry), strnlen(reinterpret_cast<const char*>(entry), 8));
@@ -105,9 +111,23 @@ std::expected<void, Error> Image::open() {
             readOnlyData = section;
         else if (name == ".data")
             data = section;
+        std::uint32_t characteristics;
+        std::memcpy(&characteristics, entry + 36, sizeof(characteristics));
+        const std::uint32_t access = characteristics & (sectionExecute | sectionWrite);
+        const bool initializedData = (characteristics & sectionInitializedData) != 0;
+        Section* const first = access == sectionExecute ? &firstExecutable : !initializedData ? nullptr : access == 0 ? &firstReadOnly : access == sectionWrite ? &firstWritable : nullptr;
+        if (first != nullptr && first->virtualSize == 0)
+            *first = section;
     }
+    //! A protector can rename the sections; the linker still puts code, read-only data and writable data ahead of what the protector adds.
+    if (code.virtualSize == 0)
+        code = firstExecutable;
+    if (readOnlyData.virtualSize == 0)
+        readOnlyData = firstReadOnly;
+    if (data.virtualSize == 0)
+        data = firstWritable;
     if (code.virtualSize == 0 || readOnlyData.virtualSize == 0 || data.virtualSize == 0)
-        return std::unexpected(Error{"The executable lacks a .text, .rdata or .data section."});
+        return std::unexpected(Error{"The executable lacks a code, read-only data or writable data section."});
     if (functionCount == 0)
         return std::unexpected(Error{"The executable has no exception directory."});
     return {};
