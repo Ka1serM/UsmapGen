@@ -1,6 +1,7 @@
 #include "UsmapGen/Reflection.h"
 
 #include <algorithm>
+#include <bit>
 #include <format>
 #include <ranges>
 #include <string_view>
@@ -33,6 +34,7 @@ constexpr std::uint32_t rawStruct = 0x19;
 constexpr std::uint32_t firstEngine423Kind = 0x1E;
 constexpr std::uint32_t maxEngine418Kind = 0x1D;
 constexpr std::uint32_t maxGenFlagsKind = 0x3F;
+constexpr std::uint8_t flagsEnum = 0x01;
 constexpr std::u16string_view scriptPrefix = u"/Script/";
 constexpr std::string_view scriptPrefixUtf8 = "/Script/";
 
@@ -1124,9 +1126,16 @@ void Reflection::readEnum(const TypeRecord& record) {
     const std::string scope = engine5 ? packages[record.package] + '\n' : std::string();
     const std::string maxName = full(enumPrefixOf(enumerators, enumName) + "_MAX");
     if (!contains(full("MAX")) && !contains(maxName) && !usedEnumNames.contains(toLower(scope + maxName))) {
+        //! From UE 5.5 the parameters mark a UENUM(Flags) enum, whose largest value is the union of its single-bit enumerators.
+        const bool flags = layout->enumFlags != 0 && (image.read<std::uint8_t>(record.params + layout->enumFlags) & flagsEnum) != 0;
         std::int64_t maxValue = 0;
-        if (!enumerators.empty())
+        if (flags) {
+            for (const EnumName& entry : enumerators)
+                if (std::has_single_bit(entry.value))
+                    maxValue |= std::int64_t(entry.value);
+        } else if (!enumerators.empty()) {
             maxValue = std::ranges::max(enumerators | std::views::transform([](const EnumName& entry) { return std::int64_t(entry.value); }));
+        }
         enumerators.push_back({maxName, std::uint64_t(maxValue + 1)});
     }
     Enum entry{.name = name, .firstValue = std::uint32_t(schema.enumValues.size()), .valueCount = std::uint16_t(enumerators.size())};
