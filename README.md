@@ -27,6 +27,23 @@ cmake --workflow --preset linux-release
 usmapgen VALORANT-Win64-Shipping.exe VALORANT.usmap
 ```
 
+The optional `--name-casing <unknown|non-preserving|preserving>` precedes the paths:
+
+```sh
+usmapgen --name-casing non-preserving Game.exe Game.usmap
+```
+
+The default `unknown` and explicit `preserving` retain the original output. Use
+`non-preserving` only when the target's FName implementation is independently known
+not to preserve case. Neither the engine version nor a Shipping filename establishes
+this; UsmapGen does not detect the setting automatically.
+
+Only in `non-preserving` mode, a **whole bare** enum literal `none` (any ASCII case)
+is written as the reserved `None`, before removing enum scope. `Enum::NONE` still
+writes `NONE`; `NONE_MAX`, `NONE_0`, `HP`/`Hp` and `rewards`/`Rewards` are unchanged.
+This is not general FName casing reconstruction: other names depend on registration
+order, and class, property and enum type names are not normalized.
+
 ## Library
 
 ```cmake
@@ -44,4 +61,14 @@ public:
 const std::expected<std::vector<std::byte>, UsmapGen::Error> usmap = UsmapGen::generateUsmap(source);
 ```
 
+The optional second argument is `UsmapGen::NameCasing::Unknown` (default),
+`UsmapGen::NameCasing::NonPreserving` or `UsmapGen::NameCasing::Preserving`.
+Existing one-argument calls retain their behavior.
+
 The output is an uncompressed usmap of version 4 (ExplicitEnumValues) without package versioning.
+
+## Tests
+
+Configure with `-DUSMAPGEN_BUILD_TESTS=ON`, build, then run
+`ctest --test-dir <build-directory> --output-on-failure`. The fixtures are synthetic;
+no game executables or assets are needed.
