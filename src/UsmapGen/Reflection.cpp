@@ -8,6 +8,7 @@
 #include <unordered_set>
 
 #include "UsmapGen/Code.h"
+#include "UsmapGen/Enum.h"
 #include "UsmapGen/Layout.h"
 
 namespace UsmapGen {
@@ -33,6 +34,7 @@ constexpr std::uint32_t rawStruct = 0x19;
 constexpr std::uint32_t firstEngine423Kind = 0x1E;
 constexpr std::uint32_t maxEngine418Kind = 0x1D;
 constexpr std::uint32_t maxGenFlagsKind = 0x3F;
+constexpr std::uint8_t flagsEnum = 0x01;
 constexpr std::u16string_view scriptPrefix = u"/Script/";
 constexpr std::string_view scriptPrefixUtf8 = "/Script/";
 
@@ -260,6 +262,7 @@ private:
     Schema schema;
 
     bool engine5 = false;
+    EnumMaxBehavior enumMax = EnumMaxBehavior::Legacy;
     const Layout* layout = nullptr;
     TypeNumbering numbering = TypeNumbering::Engine5;
     bool backward = true;
@@ -1124,10 +1127,10 @@ void Reflection::readEnum(const TypeRecord& record) {
     const std::string scope = engine5 ? packages[record.package] + '\n' : std::string();
     const std::string maxName = full(enumPrefixOf(enumerators, enumName) + "_MAX");
     if (!contains(full("MAX")) && !contains(maxName) && !usedEnumNames.contains(toLower(scope + maxName))) {
-        std::int64_t maxValue = 0;
-        if (!enumerators.empty())
-            maxValue = std::ranges::max(enumerators | std::views::transform([](const EnumName& entry) { return std::int64_t(entry.value); }));
-        enumerators.push_back({maxName, std::uint64_t(maxValue + 1)});
+        const bool flags = enumMax != EnumMaxBehavior::Legacy && layout->enumFlags != 0 &&
+                           (image.read<std::uint8_t>(record.params + layout->enumFlags) & flagsEnum) != 0;
+        const std::uint64_t maxValue = syntheticEnumMax(enumerators | std::views::transform([](const EnumName& entry) { return entry.value; }), enumMax, flags);
+        enumerators.push_back({maxName, maxValue});
     }
     Enum entry{.name = name, .firstValue = std::uint32_t(schema.enumValues.size()), .valueCount = std::uint16_t(enumerators.size())};
     for (const EnumName& enumerator : enumerators) {
@@ -1172,6 +1175,8 @@ std::expected<Schema, Error> Reflection::read() {
     }
     if (image.getError())
         return std::unexpected(*image.getError());
+    if (engine5 && layout == &layout53)
+        enumMax = enumMaxBehavior(true, image.readFileVersion());
     detectTypeNumbering();
     detectPropertyOrder();
     collectPackageTypes();
