@@ -437,6 +437,142 @@ std::span<const Store> Code::findStores(const std::uint64_t function) {
     return analyze(function).stores;
 }
 
+//! An inlined append computes index * 5, loads the array, then writes five qwords at scale 8; separate pointer tracking leaves call/store interpretation unchanged.
+std::vector<std::array<std::uint64_t, 5>> Code::findPointerRecords(const std::uint64_t function) {
+    using Registers = std::array<std::optional<std::uint64_t>, registerCount>;
+    std::vector<std::array<std::uint64_t, 5>> records;
+    traverse(function);
+    //! Loops need a fixpoint; this recognizer only accepts forward control flow.
+    for (const auto [begin, end] : covered)
+        for (std::uint64_t address = begin; address < end && decode(address); address += instruction.length)
+            if (instruction.meta.category == ZYDIS_CATEGORY_COND_BR || instruction.mnemonic == ZYDIS_MNEMONIC_JMP)
+                if (const auto target = branchTarget(address); target && *target <= address)
+                    return records;
+    Registers registers{};
+    bool reachable = false;
+    std::map<std::uint64_t, Registers> incoming;
+    const auto merge = [](Registers& into, const Registers& from) {
+        for (std::size_t i = 0; i < into.size(); i++)
+            if (into[i] != from[i])
+                into[i].reset();
+    };
+    const auto valueOf = [&](const ZydisDecodedOperand& operand) -> std::optional<std::uint64_t> {
+        if (operand.type == ZYDIS_OPERAND_TYPE_IMMEDIATE)
+            return operand.imm.value.u;
+        if (operand.type == ZYDIS_OPERAND_TYPE_REGISTER && (operand.size == 64 || operand.size == 32)) {
+            const int reg = indexOf(operand.reg.value);
+            if (reg >= 0 && registers[reg])
+                return operand.size == 32 ? std::uint32_t(*registers[reg]) : *registers[reg];
+        }
+        return std::nullopt;
+    };
+    std::array<std::uint64_t, 5> record{};
+    std::size_t stage = 0;
+    ZydisRegister index = ZYDIS_REGISTER_NONE, base = ZYDIS_REGISTER_NONE;
+    std::uint64_t previousEnd = 0;
+    for (const auto [begin, end] : covered) {
+        if (begin != previousEnd) {
+            registers = {};
+            reachable = begin == function;
+            stage = 0;
+        }
+        previousEnd = end;
+        for (std::uint64_t address = begin; address < end && decode(address); address += instruction.length) {
+            if (const auto edge = incoming.find(address); edge != incoming.end()) {
+                //! A jump has no fallthrough predecessor; unknown values on a reachable path still participate in the merge.
+                if (reachable)
+                    merge(registers, edge->second);
+                else
+                    registers = edge->second;
+                reachable = true;
+                stage = 0;
+            }
+            if (!reachable)
+                continue;
+            const bool pair = instruction.operand_count_visible == 2;
+            const auto& destination = operands[0];
+            const auto& source = operands[1];
+            if (stage == 1 && pair && instruction.mnemonic == ZYDIS_MNEMONIC_MOV &&
+                destination.type == ZYDIS_OPERAND_TYPE_REGISTER && destination.size == 64 &&
+                indexOf(destination.reg.value) >= 0 && destination.reg.value != index && destination.reg.value != ZYDIS_REGISTER_RSP &&
+                source.type == ZYDIS_OPERAND_TYPE_MEMORY && source.size == 64 && indexOf(source.mem.base) >= 0 &&
+                source.mem.base != ZYDIS_REGISTER_RSP && source.mem.index == ZYDIS_REGISTER_NONE && source.mem.disp.value == 0 &&
+                (source.mem.segment == ZYDIS_REGISTER_DS || source.mem.segment == ZYDIS_REGISTER_SS)) {
+                base = destination.reg.value;
+                stage++;
+            } else if (stage >= 2 && pair && instruction.mnemonic == ZYDIS_MNEMONIC_MOV &&
+                       destination.type == ZYDIS_OPERAND_TYPE_MEMORY && destination.size == 64 &&
+                       destination.mem.base == base && destination.mem.index == index && destination.mem.scale == 8 &&
+                       (destination.mem.segment == ZYDIS_REGISTER_DS || destination.mem.segment == ZYDIS_REGISTER_SS) &&
+                       destination.mem.disp.value == std::int64_t((stage - 2) * 8) && valueOf(source)) {
+                record[stage - 2] = *valueOf(source);
+                if (++stage == 7) {
+                    records.push_back(record);
+                    stage = 0;
+                }
+            } else {
+                stage = 0;
+                if (pair && instruction.mnemonic == ZYDIS_MNEMONIC_LEA && destination.type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                    destination.size == 64 && indexOf(destination.reg.value) >= 0 && destination.reg.value != ZYDIS_REGISTER_RSP &&
+                    source.type == ZYDIS_OPERAND_TYPE_MEMORY && indexOf(source.mem.base) >= 0 &&
+                    source.mem.base != ZYDIS_REGISTER_RSP && source.mem.base == source.mem.index &&
+                    source.mem.scale == 4 && source.mem.disp.value == 0) {
+                    index = destination.reg.value;
+                    stage = 1;
+                }
+            }
+            if (instruction.meta.category == ZYDIS_CATEGORY_COND_BR || instruction.mnemonic == ZYDIS_MNEMONIC_JMP) {
+                if (const auto target = branchTarget(address)) {
+                    const auto [edge, inserted] = incoming.emplace(*target, registers);
+                    if (!inserted)
+                        merge(edge->second, registers);
+                }
+            }
+            if (instruction.mnemonic == ZYDIS_MNEMONIC_CALL) {
+                for (const int reg : volatileRegisters)
+                    registers[reg].reset();
+                continue;
+            }
+            if (instruction.mnemonic == ZYDIS_MNEMONIC_JMP || instruction.mnemonic == ZYDIS_MNEMONIC_RET ||
+                instruction.mnemonic == ZYDIS_MNEMONIC_INT3 || instruction.mnemonic == ZYDIS_MNEMONIC_UD2) {
+                reachable = false;
+                stage = 0;
+                continue;
+            }
+            std::optional<std::uint64_t> value;
+            if (pair && destination.type == ZYDIS_OPERAND_TYPE_REGISTER && (destination.size == 64 || destination.size == 32)) {
+                if (instruction.mnemonic == ZYDIS_MNEMONIC_XOR && source.type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                    source.reg.value == destination.reg.value) {
+                    value = 0;
+                } else if (instruction.mnemonic == ZYDIS_MNEMONIC_MOV) {
+                    value = valueOf(source);
+                    if (source.type == ZYDIS_OPERAND_TYPE_MEMORY && (source.size == 64 || source.size == 32) &&
+                        source.mem.base == ZYDIS_REGISTER_RIP && source.mem.index == ZYDIS_REGISTER_NONE &&
+                        source.mem.segment == ZYDIS_REGISTER_DS) {
+                        const std::uint64_t at = address + instruction.length + source.mem.disp.value;
+                        if (image.isReadOnlyData(at) && image.isReadOnlyData(at + source.size / 8 - 1))
+                            value = source.size == 32 ? image.read<std::uint32_t>(at) : image.read<std::uint64_t>(at);
+                    }
+                } else if (instruction.mnemonic == ZYDIS_MNEMONIC_LEA && source.type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                           source.mem.base == ZYDIS_REGISTER_RIP && source.mem.index == ZYDIS_REGISTER_NONE) {
+                    value = address + instruction.length + source.mem.disp.value;
+                }
+                //! Every 32-bit GPR write zero-extends; narrower writes are only clobbers below.
+                if (value && destination.size == 32)
+                    value = std::uint32_t(*value);
+            }
+            for (const auto& operand : std::span(operands, instruction.operand_count))
+                if (operand.type == ZYDIS_OPERAND_TYPE_REGISTER && (operand.actions & ZYDIS_OPERAND_ACTION_MASK_WRITE))
+                    if (const int reg = indexOf(operand.reg.value); reg >= 0)
+                        registers[reg].reset();
+            if (value && destination.type == ZYDIS_OPERAND_TYPE_REGISTER)
+                if (const int reg = indexOf(destination.reg.value); reg >= 0)
+                    registers[reg] = value;
+        }
+    }
+    return records;
+}
+
 const References& Code::findReferences(const std::uint64_t function) {
     return analyze(function).references;
 }
