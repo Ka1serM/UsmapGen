@@ -1,7 +1,6 @@
 #include "UsmapGen/Reflection.h"
 
 #include <algorithm>
-#include <bit>
 #include <format>
 #include <ranges>
 #include <string_view>
@@ -9,6 +8,7 @@
 #include <unordered_set>
 
 #include "UsmapGen/Code.h"
+#include "UsmapGen/Enum.h"
 #include "UsmapGen/Layout.h"
 
 namespace UsmapGen {
@@ -262,6 +262,7 @@ private:
     Schema schema;
 
     bool engine5 = false;
+    EnumMaxBehavior enumMax = EnumMaxBehavior::Legacy;
     const Layout* layout = nullptr;
     TypeNumbering numbering = TypeNumbering::Engine5;
     bool backward = true;
@@ -1126,17 +1127,10 @@ void Reflection::readEnum(const TypeRecord& record) {
     const std::string scope = engine5 ? packages[record.package] + '\n' : std::string();
     const std::string maxName = full(enumPrefixOf(enumerators, enumName) + "_MAX");
     if (!contains(full("MAX")) && !contains(maxName) && !usedEnumNames.contains(toLower(scope + maxName))) {
-        //! From UE 5.5 the parameters mark a UENUM(Flags) enum, whose largest value is the union of its single-bit enumerators.
-        const bool flags = layout->enumFlags != 0 && (image.read<std::uint8_t>(record.params + layout->enumFlags) & flagsEnum) != 0;
-        std::int64_t maxValue = 0;
-        if (flags) {
-            for (const EnumName& entry : enumerators)
-                if (std::has_single_bit(entry.value))
-                    maxValue |= std::int64_t(entry.value);
-        } else if (!enumerators.empty()) {
-            maxValue = std::ranges::max(enumerators | std::views::transform([](const EnumName& entry) { return std::int64_t(entry.value); }));
-        }
-        enumerators.push_back({maxName, std::uint64_t(maxValue + 1)});
+        const bool flags = enumMax != EnumMaxBehavior::Legacy && layout->enumFlags != 0 &&
+                           (image.read<std::uint8_t>(record.params + layout->enumFlags) & flagsEnum) != 0;
+        const std::uint64_t maxValue = syntheticEnumMax(enumerators | std::views::transform([](const EnumName& entry) { return entry.value; }), enumMax, flags);
+        enumerators.push_back({maxName, maxValue});
     }
     Enum entry{.name = name, .firstValue = std::uint32_t(schema.enumValues.size()), .valueCount = std::uint16_t(enumerators.size())};
     for (const EnumName& enumerator : enumerators) {
@@ -1181,6 +1175,8 @@ std::expected<Schema, Error> Reflection::read() {
     }
     if (image.getError())
         return std::unexpected(*image.getError());
+    if (engine5 && layout == &layout53)
+        enumMax = enumMaxBehavior(true, image.readFileVersion());
     detectTypeNumbering();
     detectPropertyOrder();
     collectPackageTypes();

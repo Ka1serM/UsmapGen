@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "UsmapGen/UsmapGen.h"
+#include "UsmapGen/Version.h"
 
 namespace UsmapGen {
 
@@ -29,6 +30,8 @@ public:
     Image& operator=(const Image&) = delete;
 
     std::expected<void, Error> open();
+
+    std::optional<FileVersion> readFileVersion();
 
     const Section& getCode() const { return code; }
     const Section& getReadOnlyData() const { return readOnlyData; }
@@ -75,6 +78,8 @@ private:
     std::uint64_t functionTable = 0;
     std::uint32_t functionCount = 0;
     std::uint64_t entryPoint = 0;
+    std::uint32_t resourceRva = 0;
+    std::uint32_t resourceSize = 0;
     std::uint64_t relocations = 0;
     std::uint32_t relocationsSize = 0;
     std::unordered_map<std::uint64_t, std::size_t> writtenPageOffsets;

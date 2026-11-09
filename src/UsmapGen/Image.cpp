@@ -15,6 +15,8 @@ constexpr std::uint32_t noSlot = 0;
 constexpr std::uint32_t peSignature = 0x4550;
 constexpr std::uint16_t machineAmd64 = 0x8664;
 constexpr std::uint16_t optionalHeaderPe32Plus = 0x20B;
+constexpr std::uint32_t resourceDirectory = 2;
+constexpr std::uint32_t maxResourceSize = 16 * 1024 * 1024;
 constexpr std::uint32_t exceptionDirectory = 3;
 constexpr std::uint32_t relocationDirectory = 5;
 constexpr std::uint16_t relocationDir64 = 10;
@@ -80,6 +82,11 @@ std::expected<void, Error> Image::open() {
     const auto directory = [&](std::uint32_t index) {
         return std::pair{field(24 + 112 + 8 * index, std::uint32_t{}), field(24 + 112 + 8 * index + 4, std::uint32_t{})};
     };
+    if (optionalSize >= 112 + 8 * (resourceDirectory + 1) && field(24 + 108, std::uint32_t{}) > resourceDirectory) {
+        const auto [rva, size] = directory(resourceDirectory);
+        resourceRva = rva;
+        resourceSize = size;
+    }
     const auto [exceptionRva, exceptionSize] = directory(exceptionDirectory);
     functionTable = base + exceptionRva;
     functionCount = exceptionSize / runtimeFunctionSize;
@@ -111,6 +118,27 @@ std::expected<void, Error> Image::open() {
     if (functionCount == 0)
         return std::unexpected(Error{"The executable has no exception directory."});
     return {};
+}
+
+//! Default.rc2 writes the engine version into the fixed fields; the displayed version strings are project-defined.
+std::optional<FileVersion> Image::readFileVersion() {
+    if (resourceRva == 0 || resourceSize == 0 || resourceSize > maxResourceSize || base > UINT64_MAX - resourceRva)
+        return std::nullopt;
+    const std::uint64_t address = base + resourceRva;
+    const Section* section = findSection(address);
+    if (section == nullptr)
+        return std::nullopt;
+    const std::uint64_t within = address - section->address;
+    if (within > section->fileSize || resourceSize > section->fileSize - within || resourceSize > section->virtualSize - within)
+        return std::nullopt;
+    const std::uint64_t offset = section->fileOffset + within;
+    if (offset > source.getSize() || resourceSize > source.getSize() - offset)
+        return std::nullopt;
+    std::vector<std::byte> bytes(resourceSize);
+    //! Optional metadata I/O must not set the reflection image's permanent error.
+    if (!source.read(offset, bytes))
+        return std::nullopt;
+    return error ? std::nullopt : readVersionResource(bytes, resourceRva);
 }
 
 void Image::fail(std::string message) {
