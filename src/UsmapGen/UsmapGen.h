@@ -20,7 +20,10 @@ public:
     virtual std::expected<void, Error> read(std::uint64_t offset, std::span<std::byte> buffer) const noexcept = 0;
 };
 
+enum class NameCasing : std::uint8_t { Unknown, NonPreserving, Preserving };
+
 //! UnrealHeaderTool compiles the reflection tables into the executable from UE 4.18.
 std::expected<std::vector<std::byte>, Error> generateUsmap(const Source& executable);
+std::expected<std::vector<std::byte>, Error> generateUsmap(const Source& executable, NameCasing nameCasing);
 
 }

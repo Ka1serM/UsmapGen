@@ -1,5 +1,6 @@
 #include <fstream>
 #include <print>
+#include <string_view>
 
 #include "UsmapGen/UsmapGen.h"
 
@@ -29,16 +30,30 @@ private:
 }
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        std::println(stderr, "usage: usmapgen <executable> <output.usmap>");
+    const auto usage = [] {
+        std::println(stderr, "usage: usmapgen [--name-casing <unknown|non-preserving|preserving>] <executable> <output.usmap>");
         return 2;
+    };
+    UsmapGen::NameCasing nameCasing = UsmapGen::NameCasing::Unknown;
+    if (argc == 5 && std::string_view(argv[1]) == "--name-casing") {
+        const std::string_view value(argv[2]);
+        if (value == "non-preserving")
+            nameCasing = UsmapGen::NameCasing::NonPreserving;
+        else if (value == "preserving")
+            nameCasing = UsmapGen::NameCasing::Preserving;
+        else if (value != "unknown")
+            return usage();
+        argc -= 2;
+        argv += 2;
     }
+    if (argc != 3 || std::string_view(argv[1]).starts_with("--"))
+        return usage();
     const FileSource source(argv[1]);
     if (!source.isOpen()) {
         std::println(stderr, "{} cannot be opened.", argv[1]);
         return 1;
     }
-    const std::expected<std::vector<std::byte>, UsmapGen::Error> usmap = UsmapGen::generateUsmap(source);
+    const std::expected<std::vector<std::byte>, UsmapGen::Error> usmap = UsmapGen::generateUsmap(source, nameCasing);
     if (!usmap) {
         std::println(stderr, "{}", usmap.error().message);
         return 1;
