@@ -267,15 +267,21 @@ std::string Image::readUtf8(std::uint64_t address) {
     std::string text;
     std::byte chunk[stringChunk];
     while (text.size() < maxStringLength) {
-        read(address, chunk);
+        const Section* section = findSection(address);
+        if (section == nullptr)
+            break;
+        //! A terminated string may end just before a section gap; do not read past it to fill a chunk.
+        const std::size_t count = std::size_t(std::min<std::uint64_t>(
+            std::min(stringChunk, maxStringLength - text.size()), section->virtualSize - (address - section->address)));
+        read(address, std::span(chunk, count));
         if (error)
             return {};
         const char* characters = reinterpret_cast<const char*>(chunk);
-        const std::size_t length = strnlen(characters, stringChunk);
+        const std::size_t length = strnlen(characters, count);
         text.append(characters, length);
-        if (length < stringChunk)
+        if (length < count)
             return text;
-        address += stringChunk;
+        address += count;
     }
     fail(std::format("The string at {:#x} has no end.", address));
     return {};
