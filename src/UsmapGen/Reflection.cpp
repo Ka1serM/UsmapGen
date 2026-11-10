@@ -142,10 +142,9 @@ std::optional<PropertyType> usmapTypeOf(Kind kind) {
     case Kind::Set: return PropertyType::Set;
     case Kind::Struct: return PropertyType::Struct;
     case Kind::Delegate: return PropertyType::Delegate;
-    //! The usmap dumpers write a sparse multicast delegate as MulticastInlineDelegate.
     case Kind::InlineMulticastDelegate:
-    case Kind::MulticastDelegate: return PropertyType::MulticastDelegate;
-    case Kind::SparseMulticastDelegate: return PropertyType::MulticastInlineDelegate;
+    case Kind::MulticastDelegate:
+    case Kind::SparseMulticastDelegate: return PropertyType::MulticastDelegate;
     case Kind::Text: return PropertyType::Text;
     case Kind::Enum: return PropertyType::Enum;
     case Kind::FieldPath: return PropertyType::FieldPath;
