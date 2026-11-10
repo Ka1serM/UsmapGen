@@ -318,6 +318,9 @@ std::vector<std::uint64_t> Reflection::findInitializers() {
 //! A protector's entry point hides the CRT startup code, but .CRT$XCU stays the longest run of relocated code pointers in .rdata, with zeros between CRT sections.
 std::vector<std::uint64_t> Reflection::findInitializersInReadOnlyData() {
     const std::vector<std::uint64_t> slots = image.readPointerSlots(image.getReadOnlyData());
+    //! A protector can keep only its own relocations (Themida: one block for .tls), none of them in .rdata.
+    if (slots.empty() && !image.getError())
+        return findInitializersWithoutRelocations();
     struct Run {
         std::size_t first;
         std::size_t count;
