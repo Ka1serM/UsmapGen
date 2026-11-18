@@ -940,6 +940,15 @@ void Reflection::collectClasses() {
         classOfFunction.emplace(code.followThunks(record.getter), classes.size());
         classes.push_back({name, params, construct, record.getter, std::move(registeredName)});
     }
+    //! An intrinsic class can inline the Z_Construct of its super, whose parameters start with the StaticClass of the super.
+    for (std::size_t index = 0; index < classes.size(); index++) {
+        ClassInfo& info = classes[index];
+        if (info.params == 0)
+            continue;
+        const std::optional<std::size_t> owner = findClass(image.read<std::uint64_t>(info.params));
+        if (owner && *owner != index)
+            info.params = 0;
+    }
 }
 
 //! GetPrivateStaticClassBody takes the super class function as argument 11 until 4.24 and 12 from 4.25; the first dependency of a class with parameters is its super.
