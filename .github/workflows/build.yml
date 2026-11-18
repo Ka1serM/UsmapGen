@@ -58,16 +58,7 @@ jobs:
             echo "## Failed tests"
             echo
             sed 's/^[0-9]*:/- /' "$failed" 2>/dev/null
-            echo
-            echo "If a mappings test fails because of an intended change, download the \`test-summaries\` artifact and copy its files into \`tests/Expected/\`."
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/upload-artifact@v7
-        if: always() && steps.test.outcome != 'skipped'
-        with:
-          name: test-summaries
-          path: build-linux-release/tests/*.txt
-          if-no-files-found: ignore
 
       - name: Save the dedicated servers
         if: always() && steps.executables.outputs.cache-hit != 'true' && github.event_name != 'pull_request'

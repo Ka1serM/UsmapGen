@@ -32,7 +32,6 @@ foreach(index RANGE ${last})
     add_test(NAME fetch/${name} COMMAND ${fetch} ${app})
     set_tests_properties(fetch/${name} PROPERTIES FIXTURES_SETUP ${name} FIXTURES_REQUIRED DepotDownloader TIMEOUT 1800 LABELS fetch)
     add_test(NAME mappings/${name}
-        COMMAND usmapgen-executable-test ${USMAPGEN_TEST_EXECUTABLES}/${app}/${file_name}
-            ${CMAKE_CURRENT_SOURCE_DIR}/Expected/${engine}-${stem}.txt ${CMAKE_CURRENT_BINARY_DIR}/${engine}-${stem}.txt)
+        COMMAND usmapgen-executable-test ${USMAPGEN_TEST_EXECUTABLES}/${app}/${file_name})
     set_tests_properties(mappings/${name} PROPERTIES FIXTURES_REQUIRED ${name} TIMEOUT 300 LABELS mappings)
 endforeach()

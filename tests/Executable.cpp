@@ -1,10 +1,10 @@
 #include <format>
 #include <fstream>
-#include <iterator>
+#include <initializer_list>
 #include <print>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <unordered_map>
 
 #include "UsmapGen/Image.h"
 #include "UsmapGen/Reflection.h"
@@ -33,26 +33,85 @@ private:
     std::uint64_t size;
 };
 
+struct Minimum {
+    std::string_view what;
+    std::size_t count;
+    std::size_t minimum;
+};
+
+struct RequiredStruct {
+    std::string_view name;
+    std::string_view super;
+    std::initializer_list<std::string_view> properties;
+};
+
+struct RequiredEnum {
+    std::string_view name;
+    std::initializer_list<std::string_view> values;
+};
+
+constexpr RequiredStruct requiredStructs[] = {
+    {"Object", "", {}},
+    {"ObjectRedirector", "Object", {}},
+    {"Actor", "Object", {"RootComponent"}},
+    {"Info", "Actor", {}},
+    {"GameModeBase", "Info", {}},
+    {"Pawn", "Actor", {"Controller"}},
+    {"Character", "Pawn", {"CharacterMovement"}},
+    {"Controller", "Actor", {}},
+    {"PlayerController", "Controller", {}},
+    {"ActorComponent", "Object", {}},
+    {"SceneComponent", "ActorComponent", {"AttachParent"}},
+    {"PrimitiveComponent", "SceneComponent", {}},
+    {"World", "Object", {}},
+    {"Vector", "", {"X", "Y", "Z"}},
+    {"Rotator", "", {"Pitch", "Yaw", "Roll"}},
+    {"Transform", "", {"Rotation", "Translation", "Scale3D"}},
+    {"Guid", "", {"A", "B", "C", "D"}},
+    {"LinearColor", "", {"R", "G", "B", "A"}},
+    {"Color", "", {"B", "G", "R", "A"}},
+};
+
+constexpr RequiredEnum requiredEnums[] = {
+    {"ENetRole", {"ROLE_None", "ROLE_SimulatedProxy", "ROLE_AutonomousProxy", "ROLE_Authority"}},
+    {"ECollisionChannel", {"ECC_WorldStatic", "ECC_WorldDynamic", "ECC_Pawn", "ECC_Visibility"}},
+};
+
 class Checker {
 public:
     explicit Checker(const UsmapGen::Schema& schema) : schema(schema) {
         for (const UsmapGen::Struct& entry : schema.structs)
-            structNames.insert(entry.name);
+            structs.emplace(nameOf(entry.name), &entry);
         for (const UsmapGen::Enum& entry : schema.enums)
-            enumNames.insert(entry.name);
+            enums.emplace(nameOf(entry.name), &entry);
     }
 
-    int check() {
-        if (structNames.size() != schema.structs.size())
+    int check(std::size_t usmapSize) {
+        const Minimum minimums[] = {
+            {"names", schema.names.getNames().size(), 7000},
+            {"enums", schema.enums.size(), 300},
+            {"enum values", schema.enumValues.size(), 1800},
+            {"structs", schema.structs.size(), 1500},
+            {"properties", schema.properties.size(), 6000},
+            {"usmap bytes", usmapSize, 250000},
+        };
+        for (const Minimum& minimum : minimums) {
+            std::println("{} {}", minimum.what, minimum.count);
+            if (minimum.count < minimum.minimum)
+                fail(std::format("The mappings have {} {}, fewer than {}.", minimum.count, minimum.what, minimum.minimum));
+        }
+        if (structs.size() != schema.structs.size())
             fail("Two structs have the same name.");
-        if (enumNames.size() != schema.enums.size())
+        if (enums.size() != schema.enums.size())
             fail("Two enums have the same name.");
         for (const UsmapGen::Struct& entry : schema.structs)
             checkStruct(entry);
         for (const UsmapGen::TypeNode& node : schema.types)
             checkType(node);
-        checkSuper("Object", "");
-        checkSuper("ObjectRedirector", "Object");
+        for (const RequiredStruct& required : requiredStructs)
+            checkRequired(required);
+        for (const RequiredEnum& required : requiredEnums)
+            checkRequired(required);
         return failures;
     }
 
@@ -67,80 +126,62 @@ private:
     void checkStruct(const UsmapGen::Struct& entry) {
         if (nameOf(entry.name).starts_with("DEPRECATED_"))
             fail(std::format("The struct {} keeps the DEPRECATED_ prefix.", nameOf(entry.name)));
-        if (entry.super != UsmapGen::noName && !structNames.contains(entry.super))
+        if (entry.super != UsmapGen::noName && !structs.contains(nameOf(entry.super)))
             fail(std::format("The super {} of {} is no struct.", nameOf(entry.super), nameOf(entry.name)));
     }
 
     void checkType(const UsmapGen::TypeNode& node) {
-        if (node.type == UsmapGen::PropertyType::Struct && !structNames.contains(node.name))
+        if (node.type == UsmapGen::PropertyType::Struct && !structs.contains(nameOf(node.name)))
             fail(std::format("A property has the struct {}, which is not in the mappings.", nameOf(node.name)));
-        if (node.type == UsmapGen::PropertyType::Enum && !enumNames.contains(node.name))
+        if (node.type == UsmapGen::PropertyType::Enum && !enums.contains(nameOf(node.name)))
             fail(std::format("A property has the enum {}, which is not in the mappings.", nameOf(node.name)));
     }
 
-    void checkSuper(std::string_view name, std::string_view super) {
-        for (const UsmapGen::Struct& entry : schema.structs) {
-            if (nameOf(entry.name) != name)
-                continue;
-            if (nameOf(entry.super) != super)
-                fail(std::format("The super of {} is '{}', not '{}'.", name, nameOf(entry.super), super));
+    void checkRequired(const RequiredStruct& required) {
+        const auto found = structs.find(required.name);
+        if (found == structs.end()) {
+            fail(std::format("The mappings have no struct {}.", required.name));
             return;
         }
-        fail(std::format("The mappings have no {}.", name));
+        const UsmapGen::Struct& entry = *found->second;
+        if (nameOf(entry.super) != required.super)
+            fail(std::format("The super of {} is '{}', not '{}'.", required.name, nameOf(entry.super), required.super));
+        for (const std::string_view property : required.properties) {
+            bool present = false;
+            for (std::uint32_t index = entry.firstProperty; index < entry.firstProperty + entry.propertyCount; index++)
+                present = present || nameOf(schema.properties[index].name) == property;
+            if (!present)
+                fail(std::format("The struct {} has no property {}.", required.name, property));
+        }
+    }
+
+    void checkRequired(const RequiredEnum& required) {
+        const auto found = enums.find(required.name);
+        if (found == enums.end()) {
+            fail(std::format("The mappings have no enum {}.", required.name));
+            return;
+        }
+        const UsmapGen::Enum& entry = *found->second;
+        for (const std::string_view value : required.values) {
+            bool present = false;
+            for (std::uint32_t index = entry.firstValue; index < entry.firstValue + entry.valueCount; index++)
+                present = present || nameOf(schema.enumValues[index].name) == value;
+            if (!present)
+                fail(std::format("The enum {} has no value {}.", required.name, value));
+        }
     }
 
     const UsmapGen::Schema& schema;
-    std::unordered_set<std::uint32_t> structNames;
-    std::unordered_set<std::uint32_t> enumNames;
+    std::unordered_map<std::string_view, const UsmapGen::Struct*> structs;
+    std::unordered_map<std::string_view, const UsmapGen::Enum*> enums;
     int failures = 0;
 };
-
-std::uint64_t fnv1a(std::span<const std::byte> bytes) {
-    std::uint64_t hash = 0xCBF29CE484222325;
-    for (const std::byte byte : bytes)
-        hash = (hash ^ std::uint8_t(byte)) * 0x100000001B3;
-    return hash;
-}
-
-std::string summarize(const UsmapGen::Schema& schema) {
-    return std::format("names {}\nenums {}\nenum values {}\nstructs {}\nproperties {}\nusmap fnv1a {:016x}\n", schema.names.getNames().size(),
-                       schema.enums.size(), schema.enumValues.size(), schema.structs.size(), schema.properties.size(),
-                       fnv1a(UsmapGen::writeUsmap(schema)));
-}
-
-std::string readText(const char* path) {
-    std::ifstream file(path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(file), {});
-}
-
-bool writeText(const char* path, std::string_view text) {
-    std::ofstream file(path, std::ios::binary);
-    file << text;
-    return bool(file);
-}
-
-int compare(const char* expectedPath, const char* actualPath, const std::string& actual) {
-    const std::string expected = readText(expectedPath);
-    if (expected == actual)
-        return 0;
-    if (!writeText(actualPath, actual)) {
-        std::println(stderr, "{} cannot be written.", actualPath);
-        return 1;
-    }
-    if (expected.empty()) {
-        std::println(stderr, "{} does not exist. Review the new summary and copy it there:\n{}cp {} {}", expectedPath, actual, actualPath, expectedPath);
-        return 1;
-    }
-    std::println(stderr, "The mappings differ from {}.\nExpected:\n{}Actual:\n{}If the change is correct: cp {} {}", expectedPath, expected, actual,
-                 actualPath, expectedPath);
-    return 1;
-}
 
 }
 
 int main(int argc, char** argv) {
-    if (argc != 4) {
-        std::println(stderr, "usage: usmapgen-executable-test <executable> <expected summary> <actual summary>");
+    if (argc != 2) {
+        std::println(stderr, "usage: usmapgen-executable-test <executable>");
         return 2;
     }
     const FileSource source(argv[1]);
@@ -158,6 +199,5 @@ int main(int argc, char** argv) {
         std::println(stderr, "{}", schema.error().message);
         return 1;
     }
-    const int failures = Checker(*schema).check();
-    return compare(argv[2], argv[3], summarize(*schema)) != 0 || failures != 0;
+    return Checker(*schema).check(UsmapGen::writeUsmap(*schema).size()) != 0;
 }

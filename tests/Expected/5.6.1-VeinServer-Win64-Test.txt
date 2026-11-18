@@ -1,6 +1,0 @@
-names 49486
-enums 2230
-enum values 13531
-structs 11945
-properties 43942
-usmap fnv1a ca66f32238fd840f

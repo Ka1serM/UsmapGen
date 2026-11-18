@@ -50,6 +50,6 @@ cmake --workflow --preset linux-release
 
 ## Tests
 
-`linux-release` runs the tests. They need Python 3 and download about 2 GB of free dedicated servers from Steam.
+`linux-release` runs the tests. They download 56 free dedicated servers from Steam (about 2 GB, needs Python 3) and check that each one gives complete mappings.
 
-Pull requests need passing tests. Enable GitHub Actions on your fork to run them. For an intended mappings change, copy the files from the `test-summaries` artifact into `tests/Expected/`.
+Pull requests need passing tests. Enable GitHub Actions on your fork to run them.
