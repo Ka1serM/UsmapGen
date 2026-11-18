@@ -8,12 +8,11 @@ Generates a `.usmap` mappings file from a Win64 Unreal Engine executable, withou
 
 ## Command line
 
-Download `usmapgen.exe` or `usmapgen` from the latest [Build](https://github.com/Ka1serM/UsmapGen/actions/workflows/build.yml) on `main`. On Windows, drag the game executable onto `usmapgen.exe`.
+Download `usmapgen.exe` or `usmapgen` from the latest [Build](https://github.com/Ka1serM/UsmapGen/actions/workflows/build.yml) on `main`. On Windows, drag the game executable onto `usmapgen.exe`. The `.usmap` file appears next to the game executable unless an output path is given. Paths can be relative or absolute.
 
 ```sh
-usmapgen Game.exe              # Game.usmap next to Game.exe
-usmapgen Game.exe Out.usmap
-usmapgen Game.exe Mappings/
+usmapgen Game.exe
+usmapgen C:/Games/Game.exe C:/Mappings/Game.usmap
 ```
 
 ## Library

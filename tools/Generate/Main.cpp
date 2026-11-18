@@ -3,7 +3,6 @@
 #include <fstream>
 #include <print>
 #include <string>
-#include <system_error>
 #include <vector>
 
 #include "UsmapGen/UsmapGen.h"
@@ -66,27 +65,22 @@ bool ownsConsole() {
 #endif
 }
 
-std::filesystem::path findOutput(const std::filesystem::path& executable, const std::filesystem::path* given) {
-    std::filesystem::path name = executable.filename();
-    name.replace_extension(".usmap");
-    std::error_code error;
-    if (given == nullptr)
-        return executable.parent_path() / name;
-    if (!given->has_filename() || std::filesystem::is_directory(*given, error))
-        return *given / name;
-    return *given;
+std::filesystem::path findOutput(const std::filesystem::path& executable) {
+    std::filesystem::path output = executable;
+    output.replace_extension(".usmap");
+    return output;
 }
 
 int generate(const std::vector<std::filesystem::path>& arguments) {
     if (arguments.empty() || arguments.size() > 2) {
-        std::println(stderr, "usage: usmapgen <executable> [output.usmap | output directory/]");
+        std::println(stderr, "usage: usmapgen <executable> [output.usmap]");
         std::println(stderr, "Drag an executable onto usmapgen to write the .usmap file next to it.");
         return 2;
     }
     const std::filesystem::path& executable = arguments[0];
-    const std::filesystem::path output = findOutput(executable, arguments.size() == 2 ? &arguments[1] : nullptr);
+    const std::filesystem::path output = arguments.size() == 2 ? arguments[1] : findOutput(executable);
     if (output.extension() != ".usmap") {
-        std::println(stderr, "{} is no .usmap file and no directory.", display(output));
+        std::println(stderr, "{} is no .usmap file.", display(output));
         return 2;
     }
     const FileSource source(executable);
@@ -100,9 +94,6 @@ int generate(const std::vector<std::filesystem::path>& arguments) {
         std::println(stderr, "{}", usmap.error().message);
         return 1;
     }
-    std::error_code error;
-    if (output.has_parent_path())
-        std::filesystem::create_directories(output.parent_path(), error);
     std::ofstream file(output, std::ios::binary);
     file.write(reinterpret_cast<const char*>(usmap->data()), std::streamsize(usmap->size()));
     if (!file) {
