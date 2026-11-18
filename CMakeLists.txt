@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.29)
-project(UsmapGen LANGUAGES C CXX)
+project(UsmapGen VERSION 1.0.0 LANGUAGES C CXX)
 
 include(cmake/CompilerOptions.cmake)
 

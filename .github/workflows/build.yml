@@ -34,6 +34,8 @@ jobs:
         with:
           path: build-linux-release/tools/usmapgen
           archive: false
+          # The release keeps the binaries of main, so the artifacts only need to last until the release job.
+          retention-days: 1
 
       - name: Restore the dedicated servers
         id: executables
@@ -95,3 +97,45 @@ jobs:
         with:
           path: build-windows-release/tools/usmapgen.exe
           archive: false
+          retention-days: 1
+
+  # Each push to main whose tests pass publishes the release of the version in project() of CMakeLists.txt, and
+  # moves its tag to the commit of the push.
+  release:
+    needs: [linux, windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      # The artifacts lose the executable bit.
+      - name: Pack the release files
+        run: |
+          version=$(sed -nE 's/^project\(UsmapGen VERSION ([0-9.]+) .*/\1/p' CMakeLists.txt)
+          test -n "$version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          mkdir release
+          cp dist/usmapgen.exe release/usmapgen.exe
+          install -m 755 dist/usmapgen release/usmapgen
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # An existing release stays: its tag moves to this commit, and each file replaces the one of the same name.
+        run: |
+          tag="v$VERSION"
+          notes="Built from $GITHUB_SHA."
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+            gh release upload "$tag" release/* --clobber
+            gh release edit "$tag" --notes "$notes"
+          else
+            gh release create "$tag" release/* --target "$GITHUB_SHA" --title "UsmapGen $VERSION" --notes "$notes"
+          fi
