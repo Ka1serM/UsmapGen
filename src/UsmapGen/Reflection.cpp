@@ -934,7 +934,7 @@ void Reflection::collectClasses() {
         if (classOfFunction.contains(construct))
             continue;
         std::string registeredName = image.readUtf16(record.name);
-        const std::uint32_t name = schema.names.add(std::string_view(registeredName).substr(1));
+        const std::uint32_t name = schema.names.add(bodyNameOf(registeredName));
         const std::uint64_t params = findParams(construct, ParamsKind::Class);
         classOfFunction.emplace(construct, classes.size());
         classOfFunction.emplace(code.followThunks(record.getter), classes.size());
