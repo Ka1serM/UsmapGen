@@ -14,7 +14,7 @@ constexpr int maxThunks = 4;
 constexpr int maxThunkSetup = 2;
 constexpr std::int64_t stackBelow = 0x4000;
 constexpr std::int64_t stackAbove = 0x200;
-constexpr std::size_t stackSlots = (stackBelow + stackAbove) / 8;
+constexpr std::size_t stackHalves = (stackBelow + stackAbove) / 4;
 constexpr int registerCount = 16;
 constexpr int vectorCount = 32;
 constexpr std::size_t vectorLanes = 8;
@@ -32,6 +32,12 @@ constexpr std::array<int, 7> volatileRegisters = {0, rcx, rdx, r8, r9, 10, 11};
 constexpr Value unknown{};
 
 using Lanes = std::array<Value, vectorLanes>;
+
+struct Half {
+    ValueKind kind = ValueKind::Unknown;
+    std::int8_t partner = 0;
+    std::uint32_t bits = 0;
+};
 
 constexpr Value constant(std::uint64_t value) { return {ValueKind::Constant, value}; }
 
@@ -100,16 +106,31 @@ public:
         return std::int64_t(address.value) + memory.disp.value;
     }
 
+    //! An unoptimized function keeps a 32-bit temporary in half of a stack slot and a 64-bit one at any multiple of four.
     void store(std::int64_t offset, std::uint32_t bytes, Value value) {
-        const bool aligned = offset % 8 == 0 && (bytes == 8 || bytes == 4);
-        for (std::int64_t at = offset & ~std::int64_t(7); at < offset + bytes; at += 8)
-            if (const std::optional<std::size_t> slot = slotOf(at))
-                stack[*slot] = aligned && at == offset ? value : unknown;
+        const bool whole = bytes == 8;
+        const bool sized = whole || (bytes == 4 && value.kind != ValueKind::StackAddress);
+        const bool aligned = sized && offset % 4 == 0 && halfOf(offset) && halfOf(offset + bytes - 4);
+        for (std::int64_t at = offset & ~std::int64_t(3); at < offset + bytes; at += 4) {
+            const std::optional<std::size_t> half = halfOf(at);
+            if (!half)
+                continue;
+            release(*half);
+            if (aligned)
+                stack[*half] = {value.kind, std::int8_t(!whole ? 0 : at == offset ? 1 : -1), std::uint32_t(value.value >> 8 * (at - offset))};
+        }
     }
 
-    Value load(std::int64_t offset) const {
-        const std::optional<std::size_t> slot = slotOf(offset);
-        return slot ? stack[*slot] : unknown;
+    Value load(std::int64_t offset, std::uint32_t bytes) const {
+        const std::optional<std::size_t> low = halfOf(offset);
+        if (!low || stack[*low].kind == ValueKind::Unknown)
+            return unknown;
+        if (bytes == 4)
+            return stack[*low].kind == ValueKind::Constant ? constant(stack[*low].bits) : unknown;
+        const std::optional<std::size_t> high = halfOf(offset + 4);
+        if (bytes != 8 || !high || stack[*high].kind != stack[*low].kind)
+            return unknown;
+        return {stack[*low].kind, std::uint64_t(stack[*high].bits) << 32 | stack[*low].bits};
     }
 
     Call makeCall(std::uint64_t target) const {
@@ -117,20 +138,31 @@ public:
         call.target = target;
         for (std::size_t i = 0; i < argumentRegisters.size(); i++)
             call.arguments[i] = registers[argumentRegisters[i]];
-        for (std::size_t i = argumentRegisters.size(); i < Call::maxArguments; i++)
-            call.arguments[i] = load(stackPointer + 0x20 + 8 * std::int64_t(i - argumentRegisters.size()));
+        for (std::size_t i = argumentRegisters.size(); i < Call::maxArguments; i++) {
+            const std::int64_t offset = stackPointer + 0x20 + 8 * std::int64_t(i - argumentRegisters.size());
+            const Value whole = load(offset, 8);
+            //! A 32-bit stack argument leaves the upper half of its slot unwritten.
+            call.arguments[i] = whole.kind == ValueKind::Unknown ? load(offset, 4) : whole;
+        }
         return call;
     }
 
 private:
-    static std::optional<std::size_t> slotOf(std::int64_t offset) {
-        if (offset % 8 != 0 || offset < -stackBelow || offset >= stackAbove)
+    static std::optional<std::size_t> halfOf(std::int64_t offset) {
+        if (offset % 4 != 0 || offset < -stackBelow || offset >= stackAbove)
             return std::nullopt;
-        return std::size_t((offset + stackBelow) / 8);
+        return std::size_t((offset + stackBelow) / 4);
+    }
+
+    //! A write into one half of a 64-bit value ends the other half, so a slot reused for a 32-bit value does not keep stale upper bits.
+    void release(std::size_t half) {
+        if (stack[half].partner != 0)
+            stack[half + stack[half].partner] = {};
+        stack[half] = {};
     }
 
     std::array<Value, registerCount> registers{};
-    std::array<Value, stackSlots> stack{};
+    std::array<Half, stackHalves> stack{};
     std::int64_t stackPointer = 0;
     std::array<Lanes, vectorCount> vectors{};
 };
@@ -159,9 +191,9 @@ Value sourceOf(const Machine& machine, const ZydisDecodedOperand& source) {
         return constant(source.imm.value.u);
     if (source.type == ZYDIS_OPERAND_TYPE_MEMORY) {
         const std::optional<std::int64_t> offset = machine.stackOffsetOf(source.mem);
-        if (!offset || source.size != 64)
+        if (!offset || (source.size != 64 && source.size != 32))
             return unknown;
-        return machine.load(*offset);
+        return machine.load(*offset, source.size / 8);
     }
     if (source.type != ZYDIS_OPERAND_TYPE_REGISTER)
         return unknown;
@@ -250,8 +282,11 @@ Lanes lanesOf(Image& image, const Machine& machine, const ZydisDecodedInstructio
         return lanes;
     const std::size_t count = lanesIn(source.size);
     if (const std::optional<std::int64_t> offset = machine.stackOffsetOf(source.mem)) {
-        for (std::size_t i = 0; i < count; i++)
-            lanes[i] = maskLane(machine.load(*offset + 8 * std::int64_t(i)), source.size - 64 * std::uint32_t(i));
+        for (std::size_t i = 0; i < count; i++) {
+            const std::int64_t at = *offset + 8 * std::int64_t(i);
+            const std::uint32_t bits = source.size - 64 * std::uint32_t(i);
+            lanes[i] = bits == 32 ? machine.load(at, 4) : maskLane(machine.load(at, 8), bits);
+        }
         return lanes;
     }
     const Value at = addressOf(machine, instruction, source, address);
@@ -521,6 +556,15 @@ const Analysis& Code::analyze(const std::uint64_t function) {
                 writeMemory(machine, visible[0], value);
                 if (const std::optional<Store> store = constantStoreOf(image, machine, instruction, visible[0], address, value))
                     stores.push_back(*store);
+                continue;
+            }
+            case ZYDIS_MNEMONIC_MOVSXD: {
+                //! An unoptimized function widens an int argument, such as a count of zero, to size_t this way.
+                Value value = sourceOf(machine, visible[1]);
+                if (value.kind != ValueKind::Constant || visible[1].size != 32)
+                    break;
+                value.value = std::uint64_t(std::int64_t(std::int32_t(value.value)));
+                writeRegister(machine, visible[0], value);
                 continue;
             }
             case ZYDIS_MNEMONIC_XOR:
