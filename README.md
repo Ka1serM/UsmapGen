@@ -1,23 +1,20 @@
 # UsmapGen
 
-UsmapGen generates a `.usmap` mappings file from a Win64 Unreal Engine executable. It reads the reflection tables that UnrealHeaderTool compiles into the executable, so the game does not have to run.
+Generates a `.usmap` mappings file from a Win64 Unreal Engine executable, without running the game.
 
-- Unreal Engine 4.18 to 5.8, Win64 PE32+ shipping executables
-- Ranged reads through a `Source` interface, so the executable can stream from a network
-- Builds for Linux, Windows and the web
+- Unreal Engine 4.18 to 5.8
+- Linux, Windows and web builds
 - One dependency: [Zydis](https://github.com/zyantific/zydis)
 
 ## Command line
 
-Download `usmapgen.exe` for Windows or `usmapgen` for Linux from the artifacts of the latest [Build](https://github.com/Ka1serM/UsmapGen/actions/workflows/build.yml) run on `main`. On Windows, drag the game executable onto `usmapgen.exe`. The `.usmap` file then appears next to the game executable.
+Download `usmapgen.exe` or `usmapgen` from the latest [Build](https://github.com/Ka1serM/UsmapGen/actions/workflows/build.yml) on `main`. On Windows, drag the game executable onto `usmapgen.exe`.
 
 ```sh
-usmapgen VALORANT-Win64-Shipping.exe
-usmapgen VALORANT-Win64-Shipping.exe VALORANT.usmap
-usmapgen VALORANT-Win64-Shipping.exe Mappings/
+usmapgen Game.exe              # Game.usmap next to Game.exe
+usmapgen Game.exe Out.usmap
+usmapgen Game.exe Mappings/
 ```
-
-The second path is optional. It is the output file, or a directory for `<executable name>.usmap`. The Linux build needs glibc 2.34 or later.
 
 ## Library
 
@@ -36,7 +33,7 @@ public:
 const std::expected<std::vector<std::byte>, UsmapGen::Error> usmap = UsmapGen::generateUsmap(source);
 ```
 
-The output is an uncompressed usmap of version 4 (ExplicitEnumValues) without package versioning.
+Output: uncompressed usmap version 4, no package versioning.
 
 ## Build
 
@@ -48,12 +45,12 @@ cmake --workflow --preset linux-release
 
 | Preset | Toolchain |
 | --- | --- |
-| `linux-release` | Clang, libc++ and LLD |
-| `windows-release` | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in `PATH`, from a Windows or Linux host |
-| `web-release` | Emscripten from the emsdk in `EMSDK` |
+| `linux-release` | Clang, libc++, LLD |
+| `windows-release` | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in `PATH` |
+| `web-release` | Emscripten in `EMSDK` |
 
 ## Tests
 
-The Linux workflows also run the tests. They need Python 3 and download the free dedicated servers in `tests/Executables.json` anonymously from Steam, about 2 GB on the first run.
+`linux-release` runs the tests. They need Python 3 and download about 2 GB of free dedicated servers from Steam.
 
-A pull request can only be merged when the tests pass. To run them on a fork, enable GitHub Actions in the fork: the Build workflow then runs on every push. When a change to the mappings is intended, copy the new summaries from the `test-summaries` artifact, or from `build-linux-release/tests/`, into `tests/Expected/`.
+Pull requests need passing tests. Enable GitHub Actions on your fork to run them. For an intended mappings change, copy the files from the `test-summaries` artifact into `tests/Expected/`.
