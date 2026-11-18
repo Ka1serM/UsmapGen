@@ -21,6 +21,12 @@ cmake --workflow --preset linux-release
 | `windows-release` | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in `PATH`, from a Windows or Linux host |
 | `web-release` | Emscripten from the emsdk in `EMSDK` |
 
+## Tests
+
+The Linux workflows also run the tests. They need Python 3 and download the free dedicated servers in `tests/Executables.json` anonymously from Steam, about 2 GB on the first run.
+
+A pull request can only be merged when the tests pass. To run them on a fork, enable GitHub Actions in the fork: the Build workflow then runs on every push. When a change to the mappings is intended, copy the new summaries from the `test-summaries` artifact, or from `build-linux-release/tests/`, into `tests/Expected/`.
+
 ## Command line
 
 ```sh

@@ -227,6 +227,10 @@
         {
           "type": "build",
           "name": "linux-debug"
+        },
+        {
+          "type": "test",
+          "name": "linux-debug"
         }
       ]
     },
@@ -241,6 +245,10 @@
         {
           "type": "build",
           "name": "linux-relwithdebinfo"
+        },
+        {
+          "type": "test",
+          "name": "linux-relwithdebinfo"
         }
       ]
     },
@@ -254,6 +262,10 @@
         },
         {
           "type": "build",
+          "name": "linux-release"
+        },
+        {
+          "type": "test",
           "name": "linux-release"
         }
       ]
@@ -299,6 +311,68 @@
           "name": "web-release"
         }
       ]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8
+      }
+    },
+    {
+      "name": "windows-relwithdebinfo",
+      "configurePreset": "windows-relwithdebinfo",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8
+      }
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8
+      }
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8
+      }
+    },
+    {
+      "name": "linux-relwithdebinfo",
+      "configurePreset": "linux-relwithdebinfo",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8
+      }
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8
+      }
     }
   ]
 }

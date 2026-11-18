@@ -1,0 +1,110 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    steps:
+      - name: Install the toolchain
+        run: dnf install -y --setopt=install_weak_deps=False git clang llvm lld compiler-rt libcxx-devel libcxxabi-devel llvm-libunwind-devel llvm-libunwind-static cmake ninja-build python3 libicu zstd tar
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build
+        run: |
+          cmake --preset linux-release
+          cmake --build --preset linux-release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usmapgen-linux-x64
+          path: |
+            build-linux-release/tools/usmapgen
+            LICENSE
+
+      - name: Restore the dedicated servers
+        id: executables
+        uses: actions/cache/restore@v4
+        with:
+          path: tests/Executables
+          key: executables-${{ hashFiles('tests/Executables.json', 'tests/fetch.py') }}
+
+      - name: Test
+        id: test
+        run: ctest --preset linux-release
+
+      - name: Report
+        if: always() && steps.test.outcome != 'skipped'
+        run: |
+          failed=build-linux-release/Testing/Temporary/LastTestsFailed.log
+          if [ "${{ steps.test.outcome }}" = success ]; then
+            echo "All tests passed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Failed tests"
+            echo
+            sed 's/^[0-9]*:/- /' "$failed" 2>/dev/null
+            echo
+            echo "If a mappings test fails because of an intended change, download the \`test-summaries\` artifact and copy its files into \`tests/Expected/\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.test.outcome != 'skipped'
+        with:
+          name: test-summaries
+          path: build-linux-release/tests/*.txt
+          if-no-files-found: ignore
+
+      - name: Save the dedicated servers
+        if: always() && steps.executables.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v4
+        with:
+          path: tests/Executables
+          key: ${{ steps.executables.outputs.cache-primary-key }}
+
+  windows:
+    name: Windows
+    runs-on: ubuntu-24.04
+    env:
+      LLVM_MINGW: llvm-mingw-20261020-ucrt-ubuntu-22.04-x86_64
+      LLVM_MINGW_SHA256: 55064b60b991a1e1e8090b8c2f84e82b22cfe5903d12c159d65064cf5e8ae335
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install the toolchain
+        run: |
+          sudo apt-get install -y ninja-build
+          curl -fsSL -o "$RUNNER_TEMP/$LLVM_MINGW.tar.xz" "https://github.com/mstorsjo/llvm-mingw/releases/download/20261020/$LLVM_MINGW.tar.xz"
+          echo "$LLVM_MINGW_SHA256  $RUNNER_TEMP/$LLVM_MINGW.tar.xz" | sha256sum -c
+          tar -xJf "$RUNNER_TEMP/$LLVM_MINGW.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$LLVM_MINGW/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: |
+          cmake --preset windows-release
+          cmake --build --preset windows-release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: usmapgen-windows-x64
+          path: |
+            build-windows-release/tools/usmapgen.exe
+            LICENSE
