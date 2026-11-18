@@ -108,6 +108,9 @@ std::expected<void, Error> Image::open() {
     }
     if (code.virtualSize == 0 || readOnlyData.virtualSize == 0 || data.virtualSize == 0)
         return std::unexpected(Error{"The executable lacks a .text, .rdata or .data section."});
+    //! A packer leaves a section without file data and fills it when the executable starts.
+    if (code.fileSize == 0 || readOnlyData.fileSize == 0)
+        return std::unexpected(Error{"The executable is packed: its .text or .rdata section has no data in the file. A memory dump of the running executable has it."});
     if (functionCount == 0)
         return std::unexpected(Error{"The executable has no exception directory."});
     return {};

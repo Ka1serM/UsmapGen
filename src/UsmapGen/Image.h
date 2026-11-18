@@ -54,6 +54,7 @@ public:
     void write(std::uint64_t address, std::span<const std::byte> bytes);
 
     bool isFunctionStart(std::uint64_t address);
+    bool hasRelocations() const { return relocationsSize != 0; }
     std::vector<std::uint64_t> readPointerSlots(const Section& section);
 
     const std::optional<Error>& getError() const { return error; }
