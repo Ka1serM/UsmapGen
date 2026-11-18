@@ -7,26 +7,6 @@ UsmapGen generates a `.usmap` mappings file from a Win64 Unreal Engine executabl
 - Builds for Linux, Windows and the web
 - One dependency: [Zydis](https://github.com/zyantific/zydis)
 
-## Build
-
-```sh
-git clone --recursive https://github.com/Ka1serM/UsmapGen.git
-cd UsmapGen
-cmake --workflow --preset linux-release
-```
-
-| Preset | Toolchain |
-| --- | --- |
-| `linux-release` | Clang, libc++ and LLD |
-| `windows-release` | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in `PATH`, from a Windows or Linux host |
-| `web-release` | Emscripten from the emsdk in `EMSDK` |
-
-## Tests
-
-The Linux workflows also run the tests. They need Python 3 and download the free dedicated servers in `tests/Executables.json` anonymously from Steam, about 2 GB on the first run.
-
-A pull request can only be merged when the tests pass. To run them on a fork, enable GitHub Actions in the fork: the Build workflow then runs on every push. When a change to the mappings is intended, copy the new summaries from the `test-summaries` artifact, or from `build-linux-release/tests/`, into `tests/Expected/`.
-
 ## Command line
 
 Download `usmapgen.exe` for Windows or `usmapgen` for Linux from the artifacts of the latest [Build](https://github.com/Ka1serM/UsmapGen/actions/workflows/build.yml) run on `main`. On Windows, drag the game executable onto `usmapgen.exe`. The `.usmap` file then appears next to the game executable.
@@ -57,3 +37,23 @@ const std::expected<std::vector<std::byte>, UsmapGen::Error> usmap = UsmapGen::g
 ```
 
 The output is an uncompressed usmap of version 4 (ExplicitEnumValues) without package versioning.
+
+## Build
+
+```sh
+git clone --recursive https://github.com/Ka1serM/UsmapGen.git
+cd UsmapGen
+cmake --workflow --preset linux-release
+```
+
+| Preset | Toolchain |
+| --- | --- |
+| `linux-release` | Clang, libc++ and LLD |
+| `windows-release` | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in `PATH`, from a Windows or Linux host |
+| `web-release` | Emscripten from the emsdk in `EMSDK` |
+
+## Tests
+
+The Linux workflows also run the tests. They need Python 3 and download the free dedicated servers in `tests/Executables.json` anonymously from Steam, about 2 GB on the first run.
+
+A pull request can only be merged when the tests pass. To run them on a fork, enable GitHub Actions in the fork: the Build workflow then runs on every push. When a change to the mappings is intended, copy the new summaries from the `test-summaries` artifact, or from `build-linux-release/tests/`, into `tests/Expected/`.
