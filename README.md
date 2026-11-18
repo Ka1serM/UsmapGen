@@ -1,30 +1,18 @@
 # UsmapGen
 
-UsmapGen generates a `.usmap` mappings file from a Win64 Unreal Engine executable. It reads the reflection tables that UnrealHeaderTool compiles into the executable, so the game does not have to run.
+Generates a `.usmap` mappings file from a Win64 Unreal Engine executable, without running the game.
 
-- Unreal Engine 4.18 to 5.8, Win64 PE32+ shipping executables
-- Ranged reads through a `Source` interface, so the executable can stream from a network
-- Builds for Linux, Windows and the web
+- Unreal Engine 4.18 to 5.8
+- Linux, Windows and web builds
 - One dependency: [Zydis](https://github.com/zyantific/zydis)
-
-## Build
-
-```sh
-git clone --recursive https://github.com/Ka1serM/UsmapGen.git
-cd UsmapGen
-cmake --workflow --preset linux-release
-```
-
-| Preset | Toolchain |
-| --- | --- |
-| `linux-release` | Clang, libc++ and LLD |
-| `windows-release` | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in `PATH`, from a Windows or Linux host |
-| `web-release` | Emscripten from the emsdk in `EMSDK` |
 
 ## Command line
 
+[Download](https://github.com/Ka1serM/UsmapGen/actions/workflows/build.yml), then drag the game executable onto `usmapgen.exe`.
+
 ```sh
-usmapgen VALORANT-Win64-Shipping.exe VALORANT.usmap
+usmapgen Game.exe
+usmapgen C:/Games/Game.exe C:/Mappings/Game.usmap
 ```
 
 ## Library
@@ -44,4 +32,24 @@ public:
 const std::expected<std::vector<std::byte>, UsmapGen::Error> usmap = UsmapGen::generateUsmap(source);
 ```
 
-The output is an uncompressed usmap of version 4 (ExplicitEnumValues) without package versioning.
+Output: uncompressed usmap version 4, no package versioning.
+
+## Build
+
+```sh
+git clone --recursive https://github.com/Ka1serM/UsmapGen.git
+cd UsmapGen
+cmake --workflow --preset linux-release
+```
+
+| Preset | Toolchain |
+| --- | --- |
+| `linux-release` | Clang, libc++, LLD |
+| `windows-release` | [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in `PATH` |
+| `web-release` | Emscripten in `EMSDK` |
+
+## Tests
+
+`linux-release` runs the tests. They download 56 free dedicated servers from Steam (about 2 GB, needs Python 3) and check that each one gives complete mappings.
+
+Pull requests need passing tests. Enable GitHub Actions on your fork to run them.
