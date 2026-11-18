@@ -10,6 +10,7 @@
 #include "UsmapGen/Code.h"
 #include "UsmapGen/Enum.h"
 #include "UsmapGen/Layout.h"
+#include "UsmapGen/Name.h"
 
 namespace UsmapGen {
 
@@ -159,9 +160,10 @@ std::optional<PropertyType> usmapTypeOf(Kind kind) {
     }
 }
 
+//! The FName of a scoped enumerator keeps its scope, so only a bare one can match a hardcoded name.
 std::string_view shortEnumName(std::string_view full) {
     const std::size_t separator = full.rfind("::");
-    return separator == std::string_view::npos ? full : full.substr(separator + 2);
+    return separator == std::string_view::npos ? runtimeEnumName(full) : full.substr(separator + 2);
 }
 
 //! UEnum::GenerateEnumPrefix: the longest common prefix of the names, cut before its last underscore.
