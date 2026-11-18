@@ -45,6 +45,7 @@ struct Analysis {
     std::vector<Call> calls;
     References references;
     std::vector<Store> stores;
+    bool scaledIndex = false;
 };
 
 class Code {

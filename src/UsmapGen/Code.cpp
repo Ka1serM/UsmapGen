@@ -476,6 +476,9 @@ std::span<const Store> Code::findStores(const std::uint64_t function) {
 std::vector<std::array<std::uint64_t, 5>> Code::findPointerRecords(const std::uint64_t function) {
     using Registers = std::array<std::optional<std::uint64_t>, registerCount>;
     std::vector<std::array<std::uint64_t, 5>> records;
+    //! The cached analysis tells cheaply whether the function has the index * 5 that every append needs.
+    if (!analyze(function).scaledIndex)
+        return records;
     traverse(function);
     //! Loops need a fixpoint; this recognizer only accepts forward control flow.
     for (const auto [begin, end] : covered)
@@ -628,6 +631,9 @@ const Analysis& Code::analyze(const std::uint64_t function) {
         previousEnd = end;
         for (std::uint64_t address = begin; address < end && decode(address); address += instruction.length) {
             const std::span<const ZydisDecodedOperand> visible(operands, instruction.operand_count_visible);
+            if (instruction.mnemonic == ZYDIS_MNEMONIC_LEA && visible.size() == 2 && visible[1].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                visible[1].mem.base == visible[1].mem.index && visible[1].mem.scale == 4)
+                analysis.scaledIndex = true;
             switch (instruction.mnemonic) {
             case ZYDIS_MNEMONIC_CALL:
             case ZYDIS_MNEMONIC_JMP: {

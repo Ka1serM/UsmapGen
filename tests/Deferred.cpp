@@ -448,14 +448,14 @@ int main() {
     check(!UsmapGen::generateUsmap(unterminatedEnd), "unterminated admitted name at section end remains an error");
     //! A 32-bit GPR write clears its upper half; 16-bit writes do not establish a full pointer.
     const std::vector<std::vector<unsigned char>> zeroing{
-        {0x31, 0xDB},                         // xor ebx, ebx
-        {0xBB, 0, 0, 0, 0},                   // mov ebx, 0
-        {0x48, 0x31, 0xDB},                   // xor rbx, rbx
-        {0x89, 0xDB},                         // mov ebx, ebx: truncate the known high half
-        {0x66, 0x31, 0xDB},                   // xor bx, bx: high half survives
-        {0x66, 0xBB, 0, 0},                   // mov bx, 0: high half survives
-        {0x31, 0xCB},                         // xor ebx, ecx: not a self-XOR
-        {0xBB, 1, 0, 0, 0},                   // mov ebx, 1: non-null secondary
+        {0x31, 0xDB},
+        {0xBB, 0, 0, 0, 0},
+        {0x48, 0x31, 0xDB},
+        {0x89, 0xDB},
+        {0x66, 0x31, 0xDB},
+        {0x66, 0xBB, 0, 0},
+        {0x31, 0xCB},
+        {0xBB, 1, 0, 0, 0},
     };
     for (std::size_t i = 0; i < zeroing.size(); i++) {
         Fixture zero;
