@@ -45,6 +45,7 @@ struct Analysis {
     std::vector<Call> calls;
     References references;
     std::vector<Store> stores;
+    bool scaledIndex = false;
 };
 
 class Code {
@@ -55,6 +56,7 @@ public:
 
     std::span<const Call> findCalls(std::uint64_t function);
     std::span<const Store> findStores(std::uint64_t function);
+    std::vector<std::array<std::uint64_t, 5>> findPointerRecords(std::uint64_t function);
     const References& findReferences(std::uint64_t function);
     std::uint64_t followThunks(std::uint64_t function);
 

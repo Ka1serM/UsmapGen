@@ -12,6 +12,11 @@ add_executable(usmapgen-executable-test Executable.cpp)
 target_link_libraries(usmapgen-executable-test PRIVATE UsmapGen::UsmapGen)
 target_compile_options(usmapgen-executable-test PRIVATE -Wall -Wextra -fno-exceptions -fno-rtti)
 
+add_executable(usmapgen-deferred-tests Deferred.cpp)
+target_link_libraries(usmapgen-deferred-tests PRIVATE UsmapGen::UsmapGen)
+target_compile_options(usmapgen-deferred-tests PRIVATE -Wall -Wextra -fno-exceptions -fno-rtti)
+add_test(NAME deferred-registration COMMAND usmapgen-deferred-tests)
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(USMAPGEN_TEST_EXECUTABLES ${CMAKE_CURRENT_SOURCE_DIR}/Executables CACHE PATH "The download folder of the dedicated server executables")
 set(fetch ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/fetch.py ${USMAPGEN_TEST_EXECUTABLES})
