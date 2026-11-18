@@ -4,7 +4,8 @@ add_library(UsmapGen STATIC
     UsmapGen/Layout.cpp
     UsmapGen/Reflection.cpp
     UsmapGen/Schema.cpp
-    UsmapGen/UsmapGen.cpp)
+    UsmapGen/UsmapGen.cpp
+    UsmapGen/Version.cpp)
 add_library(UsmapGen::UsmapGen ALIAS UsmapGen)
 target_include_directories(UsmapGen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(UsmapGen PRIVATE Zydis)
