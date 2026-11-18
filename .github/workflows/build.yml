@@ -19,7 +19,7 @@ jobs:
     container: fedora:44
     steps:
       - name: Install the toolchain
-        run: dnf install -y --setopt=install_weak_deps=False git clang llvm lld compiler-rt libcxx-devel libcxxabi-devel llvm-libunwind-devel llvm-libunwind-static cmake ninja-build python3 libicu zstd tar
+        run: dnf install -y --setopt=install_weak_deps=False git clang llvm lld compiler-rt libcxx-devel libcxx-static libcxxabi-devel libcxxabi-static llvm-libunwind-devel llvm-libunwind-static cmake ninja-build python3 libicu zstd tar
 
       - uses: actions/checkout@v4
         with:
@@ -30,12 +30,10 @@ jobs:
           cmake --preset linux-release
           cmake --build --preset linux-release
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: usmapgen-linux-x64
-          path: |
-            build-linux-release/tools/usmapgen
-            LICENSE
+          path: build-linux-release/tools/usmapgen
+          archive: false
 
       - name: Restore the dedicated servers
         id: executables
@@ -64,7 +62,7 @@ jobs:
             echo "If a mappings test fails because of an intended change, download the \`test-summaries\` artifact and copy its files into \`tests/Expected/\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && steps.test.outcome != 'skipped'
         with:
           name: test-summaries
@@ -102,9 +100,7 @@ jobs:
           cmake --preset windows-release
           cmake --build --preset windows-release
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: usmapgen-windows-x64
-          path: |
-            build-windows-release/tools/usmapgen.exe
-            LICENSE
+          path: build-windows-release/tools/usmapgen.exe
+          archive: false

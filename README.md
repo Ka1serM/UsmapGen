@@ -29,9 +29,15 @@ A pull request can only be merged when the tests pass. To run them on a fork, en
 
 ## Command line
 
+Download `usmapgen.exe` for Windows or `usmapgen` for Linux from the artifacts of the latest [Build](https://github.com/Ka1serM/UsmapGen/actions/workflows/build.yml) run on `main`. On Windows, drag the game executable onto `usmapgen.exe`. The `.usmap` file then appears next to the game executable.
+
 ```sh
+usmapgen VALORANT-Win64-Shipping.exe
 usmapgen VALORANT-Win64-Shipping.exe VALORANT.usmap
+usmapgen VALORANT-Win64-Shipping.exe Mappings/
 ```
+
+The second path is optional. It is the output file, or a directory for `<executable name>.usmap`. The Linux build needs glibc 2.34 or later.
 
 ## Library
 

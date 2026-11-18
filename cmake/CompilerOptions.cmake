@@ -44,7 +44,7 @@ elseif(NOT EMSCRIPTEN)
     add_compile_options("$<$<CONFIG:Debug,RelWithDebInfo>:-gsplit-dwarf>")
     add_compile_options("$<$<CONFIG:Release>:-fno-plt>")
     #! Without these flags, Clang links GCC's runtime on Linux.
-    add_link_options(--rtlib=compiler-rt --unwindlib=libunwind)
+    add_link_options(--rtlib=compiler-rt --unwindlib=libunwind -static-libstdc++ -static-libgcc)
 endif()
 
 foreach(language C CXX)
