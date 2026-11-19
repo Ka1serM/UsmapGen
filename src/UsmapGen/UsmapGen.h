@@ -23,4 +23,12 @@ public:
 //! UnrealHeaderTool compiles the reflection tables into the executable from UE 4.18.
 std::expected<std::vector<std::byte>, Error> generateUsmap(const Source& executable);
 
+struct Mappings {
+    std::vector<std::byte> usmap;
+    //! JSON that names the struct of the keys and values of each map property, which an older property tag leaves out.
+    std::string mapStructTypes;
+};
+
+std::expected<Mappings, Error> generateMappings(const Source& executable);
+
 }

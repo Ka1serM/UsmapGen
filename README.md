@@ -13,7 +13,10 @@ Generates a `.usmap` mappings file from a Win64 Unreal Engine executable, withou
 ```sh
 usmapgen Game.exe
 usmapgen C:/Games/Game.exe C:/Mappings/Game.usmap
+usmapgen Game.exe Game.usmap MapStructTypes.json
 ```
+
+A `.json` output receives the MapStructTypes of CUE4Parse and FModel: the struct of the keys and values of each map property, for games with tagged properties.
 
 ## Library
 
@@ -30,6 +33,7 @@ public:
 };
 
 const std::expected<std::vector<std::byte>, UsmapGen::Error> usmap = UsmapGen::generateUsmap(source);
+const std::expected<UsmapGen::Mappings, UsmapGen::Error> mappings = UsmapGen::generateMappings(source);
 ```
 
 Output: uncompressed usmap version 4, no package versioning.

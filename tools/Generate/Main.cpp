@@ -71,37 +71,56 @@ std::filesystem::path findOutput(const std::filesystem::path& executable) {
     return output;
 }
 
+bool write(const std::filesystem::path& output, const std::span<const std::byte> data) {
+    if (output.empty())
+        return true;
+    std::ofstream file(output, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(data.data()), std::streamsize(data.size()));
+    if (!file) {
+        std::println(stderr, "{} cannot be written.", display(output));
+        return false;
+    }
+    std::println("Wrote {}", display(output));
+    return true;
+}
+
+int showUsage() {
+    std::println(stderr, "usage: usmapgen <executable> [output.usmap] [MapStructTypes.json]");
+    std::println(stderr, "Drag an executable onto usmapgen to write the .usmap file next to it.");
+    return 2;
+}
+
 int generate(const std::vector<std::filesystem::path>& arguments) {
-    if (arguments.empty() || arguments.size() > 2) {
-        std::println(stderr, "usage: usmapgen <executable> [output.usmap]");
-        std::println(stderr, "Drag an executable onto usmapgen to write the .usmap file next to it.");
-        return 2;
-    }
+    if (arguments.empty())
+        return showUsage();
     const std::filesystem::path& executable = arguments[0];
-    const std::filesystem::path output = arguments.size() == 2 ? arguments[1] : findOutput(executable);
-    if (output.extension() != ".usmap") {
-        std::println(stderr, "{} is no .usmap file.", display(output));
-        return 2;
+    std::filesystem::path usmapOutput;
+    std::filesystem::path mapStructTypesOutput;
+    for (const std::filesystem::path& output : std::span(arguments).subspan(1)) {
+        const bool usmap = output.extension() == ".usmap";
+        if (!usmap && output.extension() != ".json") {
+            std::println(stderr, "{} is no .usmap or .json file.", display(output));
+            return 2;
+        }
+        std::filesystem::path& target = usmap ? usmapOutput : mapStructTypesOutput;
+        if (!target.empty())
+            return showUsage();
+        target = output;
     }
+    if (arguments.size() == 1)
+        usmapOutput = findOutput(executable);
     const FileSource source(executable);
     if (!source.isOpen()) {
         std::println(stderr, "{} cannot be opened.", display(executable));
         return 1;
     }
     std::println("Reading {}", display(executable));
-    const std::expected<std::vector<std::byte>, UsmapGen::Error> usmap = UsmapGen::generateUsmap(source);
-    if (!usmap) {
-        std::println(stderr, "{}", usmap.error().message);
+    const std::expected<UsmapGen::Mappings, UsmapGen::Error> mappings = UsmapGen::generateMappings(source);
+    if (!mappings) {
+        std::println(stderr, "{}", mappings.error().message);
         return 1;
     }
-    std::ofstream file(output, std::ios::binary);
-    file.write(reinterpret_cast<const char*>(usmap->data()), std::streamsize(usmap->size()));
-    if (!file) {
-        std::println(stderr, "{} cannot be written.", display(output));
-        return 1;
-    }
-    std::println("Wrote {}", display(output));
-    return 0;
+    return write(usmapOutput, mappings->usmap) && write(mapStructTypesOutput, std::as_bytes(std::span(mappings->mapStructTypes))) ? 0 : 1;
 }
 
 }

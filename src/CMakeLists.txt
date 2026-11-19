@@ -2,6 +2,7 @@ add_library(UsmapGen STATIC
     UsmapGen/Code.cpp
     UsmapGen/Image.cpp
     UsmapGen/Layout.cpp
+    UsmapGen/MapStructTypes.cpp
     UsmapGen/Reflection.cpp
     UsmapGen/Schema.cpp
     UsmapGen/UsmapGen.cpp

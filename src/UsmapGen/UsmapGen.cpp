@@ -6,14 +6,23 @@
 
 namespace UsmapGen {
 
-std::expected<std::vector<std::byte>, Error> generateUsmap(const Source& executable) {
+namespace {
+
+std::expected<Schema, Error> readSchema(const Source& executable) {
     Image image(executable);
     if (std::expected<void, Error> opened = image.open(); !opened)
         return std::unexpected(opened.error());
-    std::expected<Schema, Error> schema = readReflection(image);
-    if (!schema)
-        return std::unexpected(schema.error());
-    return writeUsmap(*schema);
+    return readReflection(image);
+}
+
+}
+
+std::expected<std::vector<std::byte>, Error> generateUsmap(const Source& executable) {
+    return readSchema(executable).transform(writeUsmap);
+}
+
+std::expected<Mappings, Error> generateMappings(const Source& executable) {
+    return readSchema(executable).transform([](const Schema& schema) { return Mappings{writeUsmap(schema), writeMapStructTypes(schema)}; });
 }
 
 }

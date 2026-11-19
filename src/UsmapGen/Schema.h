@@ -106,5 +106,6 @@ struct Schema {
 };
 
 std::vector<std::byte> writeUsmap(const Schema& schema);
+std::string writeMapStructTypes(const Schema& schema);
 
 }
