@@ -16,7 +16,7 @@ usmapgen C:/Games/Game.exe C:/Mappings/Game.usmap
 usmapgen Game.exe Game.usmap MapStructTypes.json
 ```
 
-A `.json` output receives the MapStructTypes of CUE4Parse and FModel: the struct of the keys and values of each map property, for games with tagged properties.
+A `.json` output receives the MapStructTypes of CUE4Parse and FModel: the struct of the keys and values of each map property, for games with tagged properties. Without an output, `Game.usmap` and `Game_MapStructTypes.json` are written next to the executable.
 
 ## Library
 

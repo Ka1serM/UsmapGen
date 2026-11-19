@@ -86,7 +86,7 @@ bool write(const std::filesystem::path& output, const std::span<const std::byte>
 
 int showUsage() {
     std::println(stderr, "usage: usmapgen <executable> [output.usmap] [MapStructTypes.json]");
-    std::println(stderr, "Drag an executable onto usmapgen to write the .usmap file next to it.");
+    std::println(stderr, "Drag an executable onto usmapgen to write the .usmap and _MapStructTypes.json files next to it.");
     return 2;
 }
 
@@ -107,8 +107,11 @@ int generate(const std::vector<std::filesystem::path>& arguments) {
             return showUsage();
         target = output;
     }
-    if (arguments.size() == 1)
+    if (arguments.size() == 1) {
         usmapOutput = findOutput(executable);
+        mapStructTypesOutput = executable;
+        mapStructTypesOutput.replace_filename(executable.stem() += "_MapStructTypes.json");
+    }
     const FileSource source(executable);
     if (!source.isOpen()) {
         std::println(stderr, "{} cannot be opened.", display(executable));
