@@ -133,6 +133,19 @@ public:
         return {stack[*low].kind, std::uint64_t(stack[*high].bits) << 32 | stack[*low].bits};
     }
 
+    void addBlocks(std::uint32_t call, std::vector<ArgumentBlock>& blocks) const {
+        for (std::size_t i = 0; i < argumentRegisters.size(); i++) {
+            const Value pointer = registers[argumentRegisters[i]];
+            if (pointer.kind != ValueKind::StackAddress)
+                continue;
+            const std::int64_t offset = std::int64_t(pointer.value);
+            const Value low = load(offset, 8);
+            const Value high = load(offset + 8, 8);
+            if (low.kind == ValueKind::Constant && high.kind == ValueKind::Constant)
+                blocks.push_back({call, std::uint8_t(i), {low.value, high.value}});
+        }
+    }
+
     Call makeCall(std::uint64_t target) const {
         Call call;
         call.target = target;
@@ -239,6 +252,15 @@ std::optional<Store> constantStoreOf(const Image& image, const Machine& machine,
     return Store{target.value, value.value & maskOf(destination.size), std::uint8_t(destination.size / 8)};
 }
 
+std::optional<FieldStore> fieldStoreOf(const Machine& machine, const ZydisDecodedOperand& destination, Value value) {
+    const ZydisDecodedOperandMem& memory = destination.mem;
+    const int base = indexOf(memory.base);
+    if (base < 0 || memory.index != ZYDIS_REGISTER_NONE || value.kind != ValueKind::Constant || destination.size > 64 ||
+        machine.get(base).kind != ValueKind::Unknown)
+        return std::nullopt;
+    return FieldStore{std::uint8_t(base), std::uint8_t(destination.size / 8), memory.disp.value, value.value & maskOf(destination.size)};
+}
+
 void clobber(Machine& machine, std::span<const ZydisDecodedOperand> operands) {
     for (const ZydisDecodedOperand& operand : operands) {
         if (!(operand.actions & ZYDIS_OPERAND_ACTION_MASK_WRITE))
@@ -291,7 +313,7 @@ Lanes lanesOf(Image& image, const Machine& machine, const ZydisDecodedInstructio
     }
     const Value at = addressOf(machine, instruction, source, address);
     const std::uint64_t bytes = source.size / 8;
-    if (at.kind != ValueKind::Constant || !image.isReadOnlyData(at.value) || !image.isReadOnlyData(at.value + bytes - 1))
+    if (at.kind != ValueKind::Constant || !image.isData(at.value) || !image.isData(at.value + bytes - 1))
         return lanes;
     for (std::size_t i = 0; i < count; i++) {
         std::uint64_t lane = 0;
@@ -611,6 +633,14 @@ std::vector<std::array<std::uint64_t, 5>> Code::findPointerRecords(const std::ui
     return records;
 }
 
+std::span<const ArgumentBlock> Code::findArgumentBlocks(const std::uint64_t function) {
+    return analyze(function).blocks;
+}
+
+std::span<const FieldStore> Code::findFieldStores(const std::uint64_t function) {
+    return analyze(function).fieldStores;
+}
+
 const References& Code::findReferences(const std::uint64_t function) {
     return analyze(function).references;
 }
@@ -640,6 +670,7 @@ const Analysis& Code::analyze(const std::uint64_t function) {
                 const std::optional<std::uint64_t> target = branchTarget(address);
                 const bool call = instruction.mnemonic == ZYDIS_MNEMONIC_CALL;
                 if (target && (call || image.isFunctionStart(*target))) {
+                    machine.addBlocks(std::uint32_t(calls.size()), analysis.blocks);
                     calls.push_back(machine.makeCall(*target));
                     references.code.push_back(*target);
                 }
@@ -698,6 +729,8 @@ const Analysis& Code::analyze(const std::uint64_t function) {
                 writeMemory(machine, visible[0], value);
                 if (const std::optional<Store> store = constantStoreOf(image, machine, instruction, visible[0], address, value))
                     stores.push_back(*store);
+                else if (const std::optional<FieldStore> field = fieldStoreOf(machine, visible[0], value))
+                    analysis.fieldStores.push_back(*field);
                 continue;
             }
             case ZYDIS_MNEMONIC_MOVSXD: {

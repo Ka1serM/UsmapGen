@@ -4,7 +4,9 @@ Generates a `.usmap` mappings file from a Win64 Unreal Engine executable, withou
 
 - Unreal Engine 4.18 to 5.8
 - Linux, Windows and web builds
-- One dependency: [Zydis](https://github.com/zyantific/zydis)
+- usmap version 5 with engine and package versioning
+- Zstandard, Brotli or Oodle compression, each one a CMake option
+- Dependencies, as submodules in `external`: [Zydis](https://github.com/zyantific/zydis), and the compressors of [zstd](https://github.com/facebook/zstd), [Brotli](https://github.com/google/brotli) and [ooz](https://github.com/Ka1serM/ooz), a fork of [zao/ooz](https://github.com/zao/ooz) with fixes
 
 ## Command line
 
@@ -12,8 +14,18 @@ Generates a `.usmap` mappings file from a Win64 Unreal Engine executable, withou
 
 ```sh
 usmapgen Game.exe
+usmapgen Game.exe --compression brotli
 usmapgen C:/Games/Game.exe C:/Mappings/Game.usmap
 ```
+
+Without an output path, the usmap goes next to the executable. Its name is the build version and the suffix of the compression, such as `++Fortnite+Release-43.10-CL-60118918_zs.usmap`. Without a build version, the executable gives the name. The default compression is Zstandard.
+
+| Compression | Suffix |
+| --- | --- |
+| `zstd` | `_zs` |
+| `brotli` | `_br` |
+| `oodle` | `_oo` |
+| `none` | none |
 
 ## Library
 
@@ -29,10 +41,21 @@ public:
     std::expected<void, UsmapGen::Error> read(std::uint64_t offset, std::span<std::byte> buffer) const noexcept override;
 };
 
-const std::expected<std::vector<std::byte>, UsmapGen::Error> usmap = UsmapGen::generateUsmap(source);
+const std::expected<UsmapGen::Usmap, UsmapGen::Error> usmap = UsmapGen::generateUsmap(source, {.compression = UsmapGen::Compression::Zstandard});
+// usmap->bytes: the file; usmap->fileName: such as ++Fortnite+Release-43.10-CL-60118918_zs.usmap, or empty without a build version; usmap->warnings: such as versioning that cannot be read
 ```
 
-Output: uncompressed usmap version 4, no package versioning.
+A `Source` can return the whole executable from `getBytes()`, such as a mapped file, so it is read in place.
+
+Output: usmap version 5. The header has the engine version, the package file versions and the custom versions. If they cannot be read, the header has none, and `usmap->warnings` gives the reason.
+
+| CMake option | Default | Compiles |
+| --- | --- | --- |
+| `USMAPGEN_ZSTANDARD` | `ON` | zstd |
+| `USMAPGEN_BROTLI` | `ON` | Brotli |
+| `USMAPGEN_OODLE` | `ON` | ooz |
+
+A compression that is not compiled gives an error. Turn off the ones you do not use to make your binary smaller.
 
 ## Build
 

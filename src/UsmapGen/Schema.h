@@ -1,10 +1,14 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+#include "UsmapGen/UsmapGen.h"
 
 namespace UsmapGen {
 
@@ -96,6 +100,26 @@ private:
     std::unordered_map<std::string, std::uint32_t, Hash, std::equal_to<>> indices;
 };
 
+struct EngineVersion {
+    std::uint16_t major = 0;
+    std::uint16_t minor = 0;
+    std::uint16_t patch = 0;
+    std::uint32_t changelist = 0;
+    std::string branch;
+};
+
+struct CustomVersion {
+    std::array<std::uint64_t, 2> key;
+    std::int32_t version;
+};
+
+struct Versioning {
+    EngineVersion engine;
+    std::int32_t fileVersionUE4 = 0;
+    std::int32_t fileVersionUE5 = 0;
+    std::vector<CustomVersion> customVersions;
+};
+
 struct Schema {
     NameTable names;
     std::vector<Enum> enums;
@@ -103,8 +127,12 @@ struct Schema {
     std::vector<Struct> structs;
     std::vector<Property> properties;
     std::vector<TypeNode> types;
+    std::optional<Versioning> versioning;
+    //! BuildSettings::GetBuildVersion, such as ++Fortnite+Release-43.10-CL-60118918; empty when it is not found.
+    std::string buildVersion;
+    std::vector<std::string> warnings;
 };
 
-std::vector<std::byte> writeUsmap(const Schema& schema);
+std::expected<std::vector<std::byte>, Error> writeUsmap(const Schema& schema, const Options& options);
 
 }

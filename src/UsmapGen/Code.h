@@ -30,10 +30,25 @@ struct Call {
     std::optional<std::uint64_t> getConstant(std::size_t index) const;
 };
 
+//! A register argument of a call that points at 16 constant bytes on the stack, such as an FGuid passed by reference.
+struct ArgumentBlock {
+    std::uint32_t call;
+    std::uint8_t argument;
+    std::array<std::uint64_t, 2> bytes;
+};
+
 struct Store {
     std::uint64_t address;
     std::uint64_t value;
     std::uint8_t size;
+};
+
+//! A constant store into memory that a register points at, such as a member of `this`.
+struct FieldStore {
+    std::uint8_t base;
+    std::uint8_t size;
+    std::int64_t displacement;
+    std::uint64_t value;
 };
 
 struct References {
@@ -46,6 +61,8 @@ struct Analysis {
     References references;
     std::vector<Store> stores;
     bool scaledIndex = false;
+    std::vector<ArgumentBlock> blocks;
+    std::vector<FieldStore> fieldStores;
 };
 
 class Code {
@@ -57,6 +74,8 @@ public:
     std::span<const Call> findCalls(std::uint64_t function);
     std::span<const Store> findStores(std::uint64_t function);
     std::vector<std::array<std::uint64_t, 5>> findPointerRecords(std::uint64_t function);
+    std::span<const ArgumentBlock> findArgumentBlocks(std::uint64_t function);
+    std::span<const FieldStore> findFieldStores(std::uint64_t function);
     const References& findReferences(std::uint64_t function);
     std::uint64_t followThunks(std::uint64_t function);
 

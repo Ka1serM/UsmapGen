@@ -19,7 +19,7 @@ jobs:
     container: fedora:44
     steps:
       - name: Install the toolchain
-        run: dnf install -y --setopt=install_weak_deps=False git clang llvm lld compiler-rt libcxx-devel libcxx-static libcxxabi-devel libcxxabi-static llvm-libunwind-devel llvm-libunwind-static cmake ninja-build python3 libicu zstd tar
+        run: dnf install -y --setopt=install_weak_deps=False git clang llvm lld compiler-rt libcxx-devel libcxx-static libcxxabi-devel libcxxabi-static llvm-libunwind-devel llvm-libunwind-static glibc-static cmake ninja-build python3 libicu zstd tar
 
       - uses: actions/checkout@v4
         with:

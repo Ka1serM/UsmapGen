@@ -25,6 +25,7 @@ constexpr std::uint32_t relocationDirectory = 5;
 constexpr std::uint16_t relocationDir64 = 10;
 constexpr std::uint32_t runtimeFunctionSize = 12;
 constexpr std::uint8_t unwindChainInfo = 4;
+constexpr int maxChainDepth = 8;
 constexpr std::size_t maxStringLength = 4096;
 constexpr std::size_t stringChunk = 128;
 
@@ -55,7 +56,11 @@ void appendUtf8(std::string& out, char32_t code) {
 Image::Image(const Source& source) : source(source) {}
 
 std::expected<void, Error> Image::open() {
-    const std::uint64_t pageCount = (source.getSize() + pageSize - 1) / pageSize;
+    fileBytes = source.getBytes();
+    if (fileBytes.size() != source.getSize())
+        fileBytes = {};
+    //! A source in memory needs no page cache.
+    const std::uint64_t pageCount = fileBytes.empty() ? (source.getSize() + pageSize - 1) / pageSize : 0;
     const std::uint32_t slots = static_cast<std::uint32_t>(std::min<std::uint64_t>(pageCount, maxCachedPages));
     pages.resize(std::size_t(slots) * pageSize);
     slotOfPage.assign(pageCount, noSlot);
@@ -203,6 +208,15 @@ std::span<const std::byte> Image::loadPage(const std::uint64_t page) {
 }
 
 void Image::readFile(std::uint64_t offset, std::span<std::byte> out) {
+    if (!fileBytes.empty()) {
+        if (offset > fileBytes.size() || out.size() > fileBytes.size() - offset) {
+            fail(std::format("The executable has no byte at file offset {:#x}.", std::max<std::uint64_t>(offset, fileBytes.size())));
+            std::fill(out.begin(), out.end(), std::byte{0});
+            return;
+        }
+        std::memcpy(out.data(), fileBytes.data() + offset, out.size());
+        return;
+    }
     while (!out.empty()) {
         const std::span<const std::byte> page = loadPage(offset / pageSize);
         if (page.empty()) {
@@ -395,6 +409,35 @@ bool Image::isFunctionStart(const std::uint64_t address) {
     if (read<std::uint32_t>(entry) != rva)
         return false;
     return !(read<std::uint8_t>(base + read<std::uint32_t>(entry + 8)) >> 3 & unwindChainInfo);
+}
+
+//! A chained entry stores the RUNTIME_FUNCTION of its parent after the unwind codes, which are padded to an even count.
+std::optional<std::uint64_t> Image::findFunction(const std::uint64_t address) {
+    if (address < base || functionCount == 0)
+        return std::nullopt;
+    const std::uint64_t rva = address - base;
+    std::uint32_t low = 0;
+    std::uint32_t high = functionCount;
+    while (low < high) {
+        const std::uint32_t middle = low + (high - low) / 2;
+        if (read<std::uint32_t>(functionTable + std::uint64_t(middle) * runtimeFunctionSize) <= rva)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    if (low == 0)
+        return std::nullopt;
+    std::uint64_t entry = functionTable + std::uint64_t(low - 1) * runtimeFunctionSize;
+    if (rva >= read<std::uint32_t>(entry + 4))
+        return std::nullopt;
+    for (int depth = 0; depth < maxChainDepth; depth++) {
+        const std::uint64_t unwind = base + read<std::uint32_t>(entry + 8);
+        if (!(read<std::uint8_t>(unwind) >> 3 & unwindChainInfo))
+            return base + read<std::uint32_t>(entry);
+        const std::uint8_t codes = read<std::uint8_t>(unwind + 2);
+        entry = unwind + 4 + 2 * ((std::uint64_t(codes) + 1) & ~1ull);
+    }
+    return std::nullopt;
 }
 
 }

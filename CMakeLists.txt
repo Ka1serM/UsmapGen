@@ -5,6 +5,9 @@ include(cmake/CompilerOptions.cmake)
 
 option(USMAPGEN_BUILD_TOOLS "Build the command line tool" ${PROJECT_IS_TOP_LEVEL})
 option(USMAPGEN_BUILD_TESTS "Build the regression tests" ${PROJECT_IS_TOP_LEVEL})
+option(USMAPGEN_ZSTANDARD "Compile Zstandard compression" ON)
+option(USMAPGEN_BROTLI "Compile Brotli compression" ON)
+option(USMAPGEN_OODLE "Compile Oodle compression" ON)
 
 add_subdirectory(external)
 add_subdirectory(src)

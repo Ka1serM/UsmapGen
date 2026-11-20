@@ -176,7 +176,7 @@ public:
 
 //! This fixture emits only IntProperty fields and no enums; check its complete serialized output through the original public API.
 void run(Fixture& fixture, bool present, const char* label) {
-    auto output = UsmapGen::generateUsmap(fixture);
+    auto output = UsmapGen::generateUsmap(fixture, {.compression = UsmapGen::Compression::None});
     if (!output) std::fprintf(stderr, "%s: %s\n", label, output.error().message.c_str());
     check(bool(output), label);
     if (!output) return;
@@ -184,26 +184,26 @@ void run(Fixture& fixture, bool present, const char* label) {
     bool valid = true;
     const auto read = [&]<class T>() {
         T value{};
-        if (offset > output->size() || sizeof(T) > output->size() - offset) {
+        if (offset > output->bytes.size() || sizeof(T) > output->bytes.size() - offset) {
             valid = false;
             return value;
         }
-        std::memcpy(&value, output->data() + offset, sizeof(T));
+        std::memcpy(&value, output->bytes.data() + offset, sizeof(T));
         offset += sizeof(T);
         return value;
     };
     check(read.operator()<std::uint16_t>() == 0x30C4, "usmap magic");
-    check(read.operator()<std::uint8_t>() == 4, "explicit-enum-values format");
+    check(read.operator()<std::uint8_t>() == 5, "engine-versioning format");
     check(read.operator()<std::uint32_t>() == 0, "no versioning header");
     check(read.operator()<std::uint8_t>() == 0, "uncompressed fixture");
-    check(read.operator()<std::uint32_t>() == output->size() - 16, "compressed size");
-    check(read.operator()<std::uint32_t>() == output->size() - 16, "decompressed size");
+    check(read.operator()<std::uint32_t>() == output->bytes.size() - 16, "compressed size");
+    check(read.operator()<std::uint32_t>() == output->bytes.size() - 16, "decompressed size");
     std::vector<std::string> names;
     const auto nameCount = read.operator()<std::uint32_t>();
     for (std::uint32_t i = 0; i < nameCount && valid; i++) {
         const auto length = read.operator()<std::uint16_t>();
-        if (offset > output->size() || length > output->size() - offset) { valid = false; break; }
-        names.emplace_back(reinterpret_cast<const char*>(output->data() + offset), length);
+        if (offset > output->bytes.size() || length > output->bytes.size() - offset) { valid = false; break; }
+        names.emplace_back(reinterpret_cast<const char*>(output->bytes.data() + offset), length);
         offset += length;
     }
     const auto nameAt = [&](std::uint32_t index) -> std::string_view {
@@ -229,7 +229,7 @@ void run(Fixture& fixture, bool present, const char* label) {
             check(read.operator()<std::uint8_t>() == 2, "IntProperty wire type");
         }
     }
-    check(valid && offset == output->size(), "complete bounded output parse");
+    check(valid && offset == output->bytes.size(), "complete bounded output parse");
     check(found == (present ? 1 : 0), label);
 }
 
