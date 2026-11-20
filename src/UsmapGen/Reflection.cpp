@@ -11,6 +11,7 @@
 #include "UsmapGen/Enum.h"
 #include "UsmapGen/Layout.h"
 #include "UsmapGen/Name.h"
+#include "UsmapGen/Versioning.h"
 
 namespace UsmapGen {
 
@@ -1348,6 +1349,12 @@ std::expected<Schema, Error> Reflection::read() {
         readStruct(structQueue[i]);
     for (std::size_t i = 0; i < enumQueue.size() && !image.getError(); i++)
         readEnum(enumQueue[i]);
+    if (image.getError())
+        return std::unexpected(*image.getError());
+    if (std::expected<Versioning, std::string> versioning = readVersioning(image, code, initializers, schema.buildVersion))
+        schema.versioning = std::move(*versioning);
+    else
+        schema.warnings.push_back(std::format("The usmap has no versioning: {}", versioning.error()));
     if (image.getError())
         return std::unexpected(*image.getError());
     return std::move(schema);

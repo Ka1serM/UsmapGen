@@ -1,0 +1,5 @@
+ooz (https://github.com/zao/ooz at ff5aeb9), only the Kraken, Mermaid, Selkie and Leviathan compressors and Kraken_GetBlockSize from kraken.cpp; used with permission of its authors.
+simde/: the SIMDe headers that simde/x86/sse2.h includes (https://github.com/simd-everywhere/simde, MIT, see simde/COPYING).
+
+UsmapGen change: compr_multiarray.cpp uses std::vector<uint8> instead of std::basic_string<uint8>, which libc++ no longer supports.
+UsmapGen fixes in compr_entropy.cpp: HuffBuilder::CalcNumsymsEtc read numsyms_of_len_ out of bounds, and LimitCodeLensHeuristic took the longest and shortest code from the ends of an array that its adjustments reorder.

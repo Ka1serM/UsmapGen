@@ -154,7 +154,7 @@ public:
 };
 
 void run(std::uint8_t flags) {
-    const auto output = UsmapGen::generateUsmap(Fixture(flags));
+    const auto output = UsmapGen::generateUsmap(Fixture(flags), {.compression = UsmapGen::Compression::None});
     if (!output) std::fprintf(stderr, "flags %#x: %s\n", flags, output.error().message.c_str());
     check(bool(output), "public generation succeeds");
     if (!output) return;
@@ -162,27 +162,27 @@ void run(std::uint8_t flags) {
     bool valid = true;
     const auto read = [&]<class T>() {
         T value{};
-        if (offset > output->size() || sizeof(T) > output->size() - offset) {
+        if (offset > output->bytes.size() || sizeof(T) > output->bytes.size() - offset) {
             valid = false;
             return value;
         }
-        std::memcpy(&value, output->data() + offset, sizeof(T));
+        std::memcpy(&value, output->bytes.data() + offset, sizeof(T));
         offset += sizeof(T);
         return value;
     };
     check(read.operator()<std::uint16_t>() == 0x30C4, "usmap magic");
-    check(read.operator()<std::uint8_t>() == 4, "explicit-enum-values format");
+    check(read.operator()<std::uint8_t>() == 5, "engine-versioning format");
     check(read.operator()<std::uint32_t>() == 0, "no versioning header");
     check(read.operator()<std::uint8_t>() == 0, "uncompressed fixture");
-    check(read.operator()<std::uint32_t>() == output->size() - 16, "compressed size");
-    check(read.operator()<std::uint32_t>() == output->size() - 16, "decompressed size");
+    check(read.operator()<std::uint32_t>() == output->bytes.size() - 16, "compressed size");
+    check(read.operator()<std::uint32_t>() == output->bytes.size() - 16, "decompressed size");
     std::vector<std::string> names;
     const auto nameCount = read.operator()<std::uint32_t>();
     check(nameCount == properties.size() + 2, "complete name table");
     for (std::uint32_t i = 0; i < nameCount && valid; i++) {
         const auto length = read.operator()<std::uint16_t>();
-        if (offset > output->size() || length > output->size() - offset) { valid = false; break; }
-        names.emplace_back(reinterpret_cast<const char*>(output->data() + offset), length);
+        if (offset > output->bytes.size() || length > output->bytes.size() - offset) { valid = false; break; }
+        names.emplace_back(reinterpret_cast<const char*>(output->bytes.data() + offset), length);
         offset += length;
     }
     const auto nameAt = [&](std::uint32_t index) -> std::string_view {
@@ -209,7 +209,7 @@ void run(std::uint8_t flags) {
             index += property.dimension;
         }
     }
-    check(valid && offset == output->size(), "complete bounded output parse");
+    check(valid && offset == output->bytes.size(), "complete bounded output parse");
 }
 
 }

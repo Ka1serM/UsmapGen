@@ -199,5 +199,5 @@ int main(int argc, char** argv) {
         std::println(stderr, "{}", schema.error().message);
         return 1;
     }
-    return Checker(*schema).check(UsmapGen::writeUsmap(*schema).size()) != 0;
+    return Checker(*schema).check(UsmapGen::writeUsmap(*schema, {.compression = UsmapGen::Compression::None})->size()) != 0;
 }
