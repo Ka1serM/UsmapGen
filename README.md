@@ -47,7 +47,7 @@ const std::expected<UsmapGen::Usmap, UsmapGen::Error> usmap = UsmapGen::generate
 
 A `Source` can return the whole executable from `getBytes()`, such as a mapped file, so it is read in place.
 
-Output: usmap version 5. The header has the engine version, the package file versions and the custom versions. If they cannot be read, the header has none, and `usmap->warnings` gives the reason.
+Output: usmap version 5. The header has the engine version, the package file versions, the custom versions and the network changelist, all read from the executable. If the versions cannot be read, the header has none, and `usmap->warnings` gives the reason; a network changelist that cannot be read is 0, with a warning.
 
 | CMake option | Default | Compiles |
 | --- | --- | --- |

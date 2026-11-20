@@ -1351,7 +1351,7 @@ std::expected<Schema, Error> Reflection::read() {
         readEnum(enumQueue[i]);
     if (image.getError())
         return std::unexpected(*image.getError());
-    if (std::expected<Versioning, std::string> versioning = readVersioning(image, code, initializers, schema.buildVersion))
+    if (std::expected<Versioning, std::string> versioning = readVersioning(image, code, initializers, schema.buildVersion, schema.warnings))
         schema.versioning = std::move(*versioning);
     else
         schema.warnings.push_back(std::format("The usmap has no versioning: {}", versioning.error()));

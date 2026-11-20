@@ -118,6 +118,8 @@ struct Versioning {
     std::int32_t fileVersionUE4 = 0;
     std::int32_t fileVersionUE5 = 0;
     std::vector<CustomVersion> customVersions;
+    //! FNetworkVersion::GetNetworkCompatibleChangelist.
+    std::uint32_t netChangelist = 0;
 };
 
 struct Schema {

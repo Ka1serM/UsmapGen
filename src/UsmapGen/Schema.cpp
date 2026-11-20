@@ -24,8 +24,6 @@ namespace {
 
 constexpr std::uint16_t usmapMagic = 0x30C4;
 constexpr std::uint8_t usmapVersionEngineVersioning = 5;
-//! The network changelist (FNetworkVersion) is not read from the executable.
-constexpr std::uint32_t unknownNetChangelist = 0;
 //! Mappings are compressed once and read many times, so the strongest levels are used.
 #ifdef USMAPGEN_ZSTANDARD
 constexpr int zstdLevel = 19;
@@ -252,7 +250,7 @@ std::expected<std::vector<std::byte>, Error> writeUsmap(const Schema& schema, co
             header.write(custom.key);
             header.write(custom.version);
         }
-        header.write(unknownNetChangelist);
+        header.write(versioning->netChangelist);
     }
     const std::expected<std::vector<std::byte>, Error> payload = compress(data, options);
     if (!payload)
