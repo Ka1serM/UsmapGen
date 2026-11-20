@@ -36,6 +36,7 @@ public:
 
     const Section& getCode() const { return code; }
     const Section& getReadOnlyData() const { return readOnlyData; }
+    const Section& getData() const { return data; }
     std::uint64_t getEntryPoint() const { return entryPoint; }
     bool isCode(std::uint64_t address) const { return code.contains(address); }
     bool isData(std::uint64_t address) const { return readOnlyData.contains(address) || data.contains(address); }
