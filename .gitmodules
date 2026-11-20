@@ -1,3 +1,12 @@
 [submodule "external/zydis"]
 	path = external/zydis
 	url = https://github.com/zyantific/zydis.git
+[submodule "external/zstd"]
+	path = external/zstd
+	url = https://github.com/facebook/zstd.git
+[submodule "external/brotli"]
+	path = external/brotli
+	url = https://github.com/google/brotli.git
+[submodule "external/ooz"]
+	path = external/ooz
+	url = https://github.com/Ka1serM/ooz.git

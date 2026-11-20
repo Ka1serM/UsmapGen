@@ -6,7 +6,7 @@ Generates a `.usmap` mappings file from a Win64 Unreal Engine executable, withou
 - Linux, Windows and web builds
 - usmap version 5 with engine and package versioning
 - Zstandard, Brotli or Oodle compression, each one a CMake option
-- Dependencies: [Zydis](https://github.com/zyantific/zydis), and the compressors of [zstd](https://github.com/facebook/zstd), [Brotli](https://github.com/google/brotli) and [ooz](https://github.com/zao/ooz) in `external`
+- Dependencies, as submodules in `external`: [Zydis](https://github.com/zyantific/zydis), and the compressors of [zstd](https://github.com/facebook/zstd), [Brotli](https://github.com/google/brotli) and [ooz](https://github.com/Ka1serM/ooz), a fork of [zao/ooz](https://github.com/zao/ooz) with fixes
 
 ## Command line
 
